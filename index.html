@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<script>
+  (function(){
+    const t = localStorage.getItem('rime-theme');
+    if (t) document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rime — Analyse de schémas de rimes</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="logo">RIME</div>
+  <div class="tagline">// blep bloup</div>
+  <div class="header-right">
+    <button class="btn-icon" id="themeBtn" onclick="toggleTheme()" title="Changer le thème">☀</button>
+  </div>
+</header>
+
+<main>
+  <!-- LEFT -->
+  <div class="panel-left">
+    <div class="panel-header">
+      <span class="panel-label">Paroles</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn-sm" onclick="saveToHistory()">Sauver</button>
+      </div>
+    </div>
+    <textarea id="input" placeholder="Colle tes paroles ici, un vers par ligne...&#10;&#10;Ctrl+Entrée pour analyser" oninput="updateCount()"></textarea>
+    <div class="panel-footer">
+      <button class="btn-analyze" onclick="analyze()">Analyser</button>
+      <button class="btn-clear" onclick="clearAll()">Effacer</button>
+      <span class="char-count" id="charCount">0 vers</span>
+    </div>
+  </div>
+
+  <div class="resize-handle" id="resizeHandle"></div>
+
+  <!-- RIGHT -->
+  <div class="panel-right">
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('analyse',this)">Analyse</button>
+      <button class="tab" onclick="showTab('assonances',this)">Assonances</button>
+      <button class="tab" onclick="showTab('schema',this)">Schéma</button>
+      <button class="tab" onclick="showTab('historique',this)">Historique</button>
+    </div>
+
+    <!-- ANALYSE -->
+    <div class="tab-content active" id="tab-analyse">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">◈</div>
+        <p>Lance l'analyse pour voir les résultats</p>
+      </div>
+      <div id="analysisContent" style="display:none">
+        <div class="export-bar">
+          <button class="btn-sm" onclick="exportCopy()">↗ Copier le rapport</button>
+          <button class="btn-sm" onclick="exportTxt()">↓ Télécharger .txt</button>
+        </div>
+        <div class="stats-row" id="statsRow"></div>
+        <div class="pattern-section">
+          <div class="section-title">Pattern</div>
+          <div class="pattern-chips" id="patternChips"></div>
+        </div>
+        <div class="legend" id="legendEl"></div>
+        <div class="section-title">Vers annotés <span style="color:var(--muted);font-size:9px;margin-left:8px">— souligné = rime interne</span></div>
+        <div class="lines-list" id="linesList"></div>
+      </div>
+    </div>
+
+    <!-- ASSONANCES -->
+    <div class="tab-content" id="tab-assonances">
+      <div class="empty-state" id="emptyStateAsso">
+        <div class="empty-icon">◈</div><p>Lance l'analyse pour voir les assonances</p>
+      </div>
+      <div id="assoContent" style="display:none">
+        <div class="section-title" style="margin-bottom:14px">Sons dominants</div>
+        <div class="asso-grid" id="assoGrid"></div>
+      </div>
+    </div>
+
+    <!-- SCHEMA -->
+    <div class="tab-content" id="tab-schema">
+      <div class="empty-state" id="emptyStateSchema">
+        <div class="empty-icon">◈</div><p>Lance l'analyse pour voir le schéma</p>
+      </div>
+      <div id="schemaContent" style="display:none">
+        <div class="section-title">Schéma détecté</div>
+        <div class="scheme-badge" id="schemeBadge"></div>
+        <div class="section-title">Lecture vers par vers</div>
+        <div class="scheme-desc" id="schemeDesc"></div>
+      </div>
+    </div>
+
+    <!-- HISTORIQUE -->
+    <div class="tab-content" id="tab-historique">
+      <div class="section-title" style="margin-bottom:12px">Couplets sauvegardés</div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+  </div>
+</main>
+
+<footer>rime. — 100% local</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
