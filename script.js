@@ -4,6 +4,24 @@ function getCol(i) { return getComputedStyle(document.documentElement).getProper
 
 const LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 let lastResult = null;
+
+// ── API ──
+const API_BASE = '/api';
+const rhymeCache = new Map();
+
+async function fetchRhymes(word) {
+  const key = word.toLowerCase();
+  if (rhymeCache.has(key)) return rhymeCache.get(key);
+  try {
+    const res = await fetch(`${API_BASE}/query?query=${encodeURIComponent(key)}&n=80`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    rhymeCache.set(key, data);
+    return data;
+  } catch {
+    return null;
+  }
+}
 let savedHistory = JSON.parse(localStorage.getItem('rime-history') || '[]');
 
 // ── Phonème fin de mot ──
@@ -34,6 +52,11 @@ function getEndPhoneme(word) {
 function getLastWord(line) {
   const w = line.trim().split(/\s+/);
   return (w[w.length-1]||'').replace(/[^a-zàâäéèêëîïôùûüÿç]/gi,'');
+}
+
+function getLastToken(line) {
+  const w = line.trim().split(/\s+/);
+  return w[w.length-1] || '';
 }
 
 // ── Comptage syllabes (approximatif français) ──
@@ -69,19 +92,21 @@ function findInternalRhymes(line, allEndPhonemes) {
 function highlightLine(line, endPh, inRhyme, col, internalWordIndices) {
   const words = line.split(/(\s+)/);
   let wordIdx = -1;
+  const wordCount = words.filter(t => !/^\s+$/.test(t)).length;
   let out = '';
   for (const tok of words) {
     if (/^\s+$/.test(tok)) { out += tok; continue; }
     wordIdx++;
-    const isLast = (wordIdx === words.filter(t => !/^\s+$/.test(t)).length - 1);
+    const isLast = wordIdx === wordCount - 1;
     const isInternal = internalWordIndices.includes(wordIdx);
     const escaped = escHtml(tok);
+    const attrs = `data-word-index="${wordIdx}" data-token="${escHtml(tok)}"`;
     if (isLast && inRhyme) {
-      out += `<span class="rw" style="background:${col}22;color:${col}">${escaped}</span>`;
+      out += `<span class="rw" ${attrs} style="background:${col}22;color:${col}">${escaped}</span>`;
     } else if (isInternal) {
-      out += `<span class="rw-int" style="color:${col};text-decoration-color:${col}">${escaped}</span>`;
+      out += `<span class="rw-int" ${attrs} style="color:${col};text-decoration-color:${col}">${escaped}</span>`;
     } else {
-      out += escaped;
+      out += `<span class="rw-plain" ${attrs}>${escaped}</span>`;
     }
   }
   return out;
@@ -165,9 +190,12 @@ function renderAll() {
     const internalIdxs = findInternalRhymes(line, rhymePhonemes);
     const highlighted = highlightLine(line, ph, inRhyme, col, internalIdxs);
     const badge = lbl
-      ? `<span class="v-rime" data-ph="${ph}" style="background:${col}22;color:${col}">${ph}</span>`
-      : `<span></span>`;
-    return `<div class="verse-line" data-ph="${inRhyme ? ph : ''}">
+      ? `<span style="display:flex;align-items:center;gap:4px">
+           <span class="v-rime" data-ph="${ph}" style="background:${col}22;color:${col}">${ph}</span>
+           <button class="btn-suggest" onclick="openSuggest(event,${i})">✦</button>
+         </span>`
+      : `<button class="btn-suggest" onclick="openSuggest(event,${i})">✦ rime ?</button>`;
+    return `<div class="verse-line" data-ph="${inRhyme ? ph : ''}" data-line-index="${i}">
       <span class="v-num">${i+1}</span>
       <span class="v-text">${highlighted}</span>
       <span class="v-syl">${syllables[i]}syl</span>
@@ -334,9 +362,196 @@ function toast(msg) {
   el._t = setTimeout(() => el.classList.remove('show'), 2200);
 }
 
+// ── Auto-analyse ──
+let analyzeTimer = null;
+
+function scheduleAnalyze() {
+  clearTimeout(analyzeTimer);
+  analyzeTimer = setTimeout(() => {
+    if (document.getElementById('input').value.trim()) analyze();
+  }, 600);
+}
+
+function immediateAnalyze() {
+  clearTimeout(analyzeTimer);
+  analyzeTimer = null;
+  if (document.getElementById('input').value.trim()) analyze();
+}
+
 document.getElementById('input').addEventListener('keydown', e => {
-  if (e.ctrlKey && e.key === 'Enter') analyze();
+  if (e.ctrlKey && e.key === 'Enter') { clearTimeout(analyzeTimer); analyze(); }
 });
+
+// ── Suggest popover ──
+let popoverState = null; // { lineIndex, wordIndex: null|number, token: null|string }
+
+async function openSuggest(e, lineIndex) {
+  e.stopPropagation();
+  if (!lastResult) return;
+  const word = getLastWord(lastResult.lines[lineIndex] || '');
+  if (!word) return;
+  popoverState = { lineIndex, wordIndex: null, token: null };
+  openContextualPopover(e.currentTarget.getBoundingClientRect(), lineIndex, word);
+}
+
+async function openContextualPopover(rect, lineIndex, word) {
+  if (!lastResult) return;
+  const el = getOrCreatePopover();
+  el.innerHTML = `<div class="suggest-header">Suggestions — vers ${lineIndex + 1}</div>
+    <div class="suggest-body"><span class="suggest-empty">…</span></div>`;
+  positionPopover(el, rect);
+  el.classList.add('show');
+
+  const { groups, rhymeGroups, phToLabel } = lastResult;
+  const currentPh = getEndPhoneme(word);
+  const phonemes = [...new Set([...Object.keys(rhymeGroups), ...(currentPh ? [currentPh] : [])])];
+
+  const fetched = await Promise.all(phonemes.map(async ph => {
+    const repIdx = groups[ph]?.lines[0];
+    const repWord = repIdx !== undefined ? getLastWord(lastResult.lines[repIdx]) : ph;
+    const data = await fetchRhymes(repWord);
+    return { ph, data };
+  }));
+
+  if (!el.classList.contains('show')) return;
+  const body = el.querySelector('.suggest-body');
+  const sections = fetched
+    .filter(({ data }) => data?.words?.length)
+    .map(({ ph, data }) => {
+      const label = phToLabel[ph];
+      const col = getCol(groups[ph]?.ci ?? 0);
+      const isCurrent = ph === currentPh;
+      const refWords = (groups[ph]?.lines || [])
+        .filter(idx => idx !== lineIndex)
+        .slice(0, 3)
+        .map(idx => getLastToken(lastResult.lines[idx]))
+        .filter(Boolean);
+      const chips = data.words.filter(w => w !== word).slice(0, 25)
+        .map(w => `<button class="suggest-chip" data-word="${escHtml(w)}">${escHtml(w)}</button>`)
+        .join('');
+      return `<div class="suggest-section">
+        <div class="suggest-section-title">
+          ${label ? `<span style="color:${col}">Rime ${label}</span>` : ''}
+          ${refWords.length ? `<span class="suggest-refs">${escHtml(refWords.join(', '))}</span>` : ''}
+          <em style="color:${col}">${ph}</em>
+          ${isCurrent ? '<span class="suggest-current">actuel</span>' : ''}
+        </div>
+        <div class="suggest-chips">${chips}</div>
+      </div>`;
+    }).join('');
+
+  body.innerHTML = sections || '<span class="suggest-empty">Aucune suggestion trouvée</span>';
+}
+
+function getOrCreatePopover() {
+  let el = document.getElementById('suggest-popover');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'suggest-popover';
+    el.className = 'suggest-popover';
+    document.body.appendChild(el);
+    el.addEventListener('click', e => {
+      const chip = e.target.closest('.suggest-chip');
+      if (!chip || !popoverState) return;
+      if (popoverState.wordIndex === null) {
+        applySuggestion(popoverState.lineIndex, chip.dataset.word);
+      } else {
+        applyWordReplacement(popoverState.lineIndex, popoverState.wordIndex, popoverState.token, chip.dataset.word);
+      }
+    });
+  }
+  return el;
+}
+
+function positionPopover(el, rect) {
+  let left = rect.left;
+  if (left + 350 > window.innerWidth) left = Math.max(10, window.innerWidth - 360);
+  el.style.top  = `${rect.bottom + 6}px`;
+  el.style.left = `${left}px`;
+}
+
+function closePopover() {
+  document.getElementById('suggest-popover')?.classList.remove('show');
+  popoverState = null;
+}
+
+function applySuggestion(lineIndex, newWord) {
+  const ta = document.getElementById('input');
+  const allLines = ta.value.split('\n');
+  let count = 0;
+  for (let i = 0; i < allLines.length; i++) {
+    if (!allLines[i].trim()) continue;
+    if (count === lineIndex) {
+      const parts = allLines[i].split(/(\s+)/);
+      const wordParts = parts.filter(p => !/^\s+$/.test(p));
+      const lastToken = wordParts[wordParts.length - 1];
+      const m = lastToken.match(/^([^a-zàâäéèêëîïôùûüÿça-zA-Z]*)(.+?)([^a-zàâäéèêëîïôùûüÿça-zA-Z]*)$/i);
+      const replacement = (m?.[1] || '') + newWord + (m?.[3] || '');
+      let wi = 0;
+      for (let j = 0; j < parts.length; j++) {
+        if (/^\s+$/.test(parts[j])) continue;
+        if (wi === wordParts.length - 1) { parts[j] = replacement; break; }
+        wi++;
+      }
+      allLines[i] = parts.join('');
+      break;
+    }
+    count++;
+  }
+  ta.value = allLines.join('\n');
+  closePopover();
+  analyze();
+}
+
+function applyWordReplacement(lineIndex, wordIndex, originalToken, newWord) {
+  const m = originalToken.match(/^([^a-zàâäéèêëîïôùûüÿça-zA-Z]*)(.+?)([^a-zàâäéèêëîïôùûüÿça-zA-Z]*)$/i);
+  const replacement = (m?.[1] || '') + newWord + (m?.[3] || '');
+  const ta = document.getElementById('input');
+  const allLines = ta.value.split('\n');
+  let count = 0;
+  for (let i = 0; i < allLines.length; i++) {
+    if (!allLines[i].trim()) continue;
+    if (count === lineIndex) {
+      const parts = allLines[i].split(/(\s+)/);
+      let wi = 0;
+      for (let j = 0; j < parts.length; j++) {
+        if (/^\s+$/.test(parts[j])) continue;
+        if (wi === wordIndex) { parts[j] = replacement; break; }
+        wi++;
+      }
+      allLines[i] = parts.join('');
+      break;
+    }
+    count++;
+  }
+  ta.value = allLines.join('\n');
+  closePopover();
+  analyze();
+}
+
+// ── Atelier ──
+async function atelierSearch() {
+  const word = document.getElementById('atelierInput').value.trim();
+  if (!word) return;
+  const el = document.getElementById('atelierResults');
+  el.innerHTML = '<div class="atelier-empty">Recherche…</div>';
+  const data = await fetchRhymes(word);
+  if (!data?.words?.length) {
+    el.innerHTML = '<div class="atelier-empty">Aucune rime trouvée</div>';
+    return;
+  }
+  el.innerHTML = `
+    <div class="atelier-section">
+      <div class="section-title">Rimes en <em style="color:var(--accent);font-style:normal">${escHtml(data.phoneme)}</em>
+        <span style="color:var(--muted);font-size:9px;margin-left:6px">— clic pour insérer au curseur</span>
+      </div>
+      <div class="atelier-chips">${
+        data.words.slice(0, 80).map(w =>
+          `<button class="atelier-chip" data-word="${escHtml(w)}">${escHtml(w)}</button>`
+        ).join('')
+      }</div>
+    </div>`;
+}
 
 // ── Hover highlight ──
 let activePh = null;
@@ -398,6 +613,35 @@ document.addEventListener('mouseout', e => {
 });
 
 document.addEventListener('click', e => {
+  // 1. Atelier chip → insérer au curseur
+  const ac = e.target.closest('#atelierResults .atelier-chip');
+  if (ac) {
+    const ta = document.getElementById('input');
+    ta.setRangeText(ac.dataset.word, ta.selectionStart, ta.selectionEnd, 'end');
+    ta.focus(); updateCount();
+    toast(`"${ac.dataset.word}" inséré`);
+    return;
+  }
+  // 2. Clic dans le popover → géré par son propre listener
+  if (e.target.closest('#suggest-popover')) return;
+  // 3. Bouton ✦ → géré par openSuggest
+  if (e.target.closest('.btn-suggest')) return;
+  // 4. Clic sur un mot dans un vers → ouvrir suggestions contextuelles pour ce mot
+  const wordEl = e.target.closest('.v-text .rw, .v-text .rw-int, .v-text .rw-plain');
+  if (wordEl) {
+    const token = wordEl.dataset.token || '';
+    const word = token.replace(/[^a-zàâäéèêëîïôùûüÿç]/gi, '');
+    const verseLine = wordEl.closest('[data-line-index]');
+    const lineIndex = parseInt(verseLine?.dataset.lineIndex ?? '-1');
+    if (word.length >= 3 && lineIndex >= 0) {
+      popoverState = { lineIndex, wordIndex: parseInt(wordEl.dataset.wordIndex), token };
+      openContextualPopover(wordEl.getBoundingClientRect(), lineIndex, word);
+      return;
+    }
+  }
+  // 5. Clic ailleurs → fermer le popover
+  closePopover();
+  // 6. Lock/unlock phonème
   const el = e.target.closest('[data-ph]');
   if (el?.dataset.ph) toggleLock(el.dataset.ph);
   else if (lockedPh) { lockedPh = null; activePh = null; clearHighlight(); }

@@ -32,7 +32,7 @@
         <button class="btn-sm" onclick="saveToHistory()">Sauver</button>
       </div>
     </div>
-    <textarea id="input" placeholder="Colle tes paroles ici, un vers par ligne...&#10;&#10;Ctrl+Entrée pour analyser" oninput="updateCount()"></textarea>
+    <textarea id="input" placeholder="Colle tes paroles ici, un vers par ligne...&#10;&#10;Ctrl+Entrée pour analyser" oninput="updateCount(); scheduleAnalyze()" onblur="immediateAnalyze()"></textarea>
     <div class="panel-footer">
       <button class="btn-analyze" onclick="analyze()">Analyser</button>
       <button class="btn-clear" onclick="clearAll()">Effacer</button>
@@ -49,6 +49,7 @@
       <button class="tab" onclick="showTab('assonances',this)">Assonances</button>
       <button class="tab" onclick="showTab('schema',this)">Schéma</button>
       <button class="tab" onclick="showTab('historique',this)">Historique</button>
+      <button class="tab" onclick="showTab('atelier',this)">Atelier</button>
     </div>
 
     <!-- ANALYSE -->
@@ -101,6 +102,19 @@
     <div class="tab-content" id="tab-historique">
       <div class="section-title" style="margin-bottom:12px">Couplets sauvegardés</div>
       <div class="history-list" id="historyList"></div>
+    </div>
+
+    <!-- ATELIER -->
+    <div class="tab-content" id="tab-atelier">
+      <div class="atelier-search">
+        <input type="text" id="atelierInput" class="atelier-input"
+          placeholder="Un mot à rimer…"
+          onkeydown="if(event.key==='Enter')atelierSearch()" />
+        <button class="btn-analyze" onclick="atelierSearch()">Chercher</button>
+      </div>
+      <div id="atelierResults">
+        <div class="atelier-empty">Entre un mot pour trouver ses rimes</div>
+      </div>
     </div>
   </div>
 </main>
