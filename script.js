@@ -466,8 +466,15 @@ function getOrCreatePopover() {
 function positionPopover(el, rect) {
   let left = rect.left;
   if (left + 350 > window.innerWidth) left = Math.max(10, window.innerWidth - 360);
-  el.style.top  = `${rect.bottom + 6}px`;
   el.style.left = `${left}px`;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  if (spaceBelow < 320 && rect.top > spaceBelow) {
+    el.style.top    = 'auto';
+    el.style.bottom = `${window.innerHeight - rect.top + 6}px`;
+  } else {
+    el.style.bottom = 'auto';
+    el.style.top    = `${rect.bottom + 6}px`;
+  }
 }
 
 function closePopover() {
