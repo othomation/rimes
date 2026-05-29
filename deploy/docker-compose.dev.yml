@@ -1,0 +1,37 @@
+name: rime-dev
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rime-web:dev
+    ports:
+      - "8080:80"
+    volumes:
+      # fichiers statiques montés — les changements sont immédiats
+      - ../index.html:/srv/rime/index.html
+      - ../style.css:/srv/rime/style.css
+      - ../script.js:/srv/rime/script.js
+      # Caddyfile dev proxie /api/ vers le container api
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile
+    networks:
+      - rime-dev
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    image: rime-api:dev
+    volumes:
+      # app.py monté — flask --reload prend les changements à chaud
+      - ./api/app.py:/app/app.py
+    command: ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000", "--reload"]
+    environment:
+      FLASK_DEBUG: "1"
+    networks:
+      - rime-dev
+
+networks:
+  rime-dev:
+    driver: bridge

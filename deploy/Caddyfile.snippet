@@ -1,0 +1,38 @@
+# Rime — analyser de schémas de rimes
+#
+# Append to the host's main Caddyfile.
+# Requires rime-web-1 and rime-api-1 on koda-network.
+#
+# DNS: one A/AAAA record → server IP
+#   rime.menace.cloud → server IP
+
+rime.menace.cloud {
+    # API → container Flask
+    handle /api/* {
+        uri strip_prefix /api
+        reverse_proxy rime-api-1:5000
+    }
+
+    # Static → container Caddy
+    handle {
+        reverse_proxy rime-web-1:80
+    }
+
+    encode gzip
+
+    log {
+        output file /var/log/caddy/rime.log
+        format json
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        -Server
+    }
+}
+
+http://rime.menace.cloud {
+    redir https://{host}{uri} permanent
+}

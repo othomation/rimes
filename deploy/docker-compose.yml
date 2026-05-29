@@ -1,0 +1,32 @@
+name: rime
+
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rime-web:prod
+    container_name: rime-web-1
+    restart: unless-stopped
+    networks:
+      - koda-network
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    image: rime-api:prod
+    container_name: rime-api-1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5000/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - koda-network
+
+networks:
+  koda-network:
+    external: true
