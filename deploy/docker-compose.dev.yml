@@ -24,8 +24,11 @@ services:
       dockerfile: Dockerfile
     image: rime-api:dev
     volumes:
-      # app.py monté — flask --reload prend les changements à chaud
+      # modules Python montés — flask --reload prend les changements à chaud
       - ./api/app.py:/app/app.py
+      - ./api/analysis.py:/app/analysis.py
+      - ./api/lexicon.py:/app/lexicon.py
+      - ./api/phonetics.py:/app/phonetics.py
     command: ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000", "--reload"]
     environment:
       FLASK_DEBUG: "1"

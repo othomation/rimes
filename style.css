@@ -163,11 +163,15 @@ textarea::placeholder { color: var(--placeholder); }
 .pattern-chips { display: flex; gap: 3px; flex-wrap: wrap; }
 .p-chip { font-family: 'Bebas Neue', sans-serif; font-size: 18px; padding: 5px 10px; border-radius: 2px; min-width: 32px; text-align: center; transition: transform .1s; cursor: default; }
 .p-chip:hover { transform: scale(1.18); }
+.p-chip.asso { background: transparent !important; outline: 1px dashed currentColor; outline-offset: -1px; }
 
 /* Legend */
 .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
 .legend-item { display: flex; align-items: center; gap: 5px; font-family: 'Space Mono', monospace; font-size: 10px; color: var(--text2); }
-.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; border: 1px solid transparent; }
+.legend-dot.asso { background: transparent !important; border-style: dashed; }
+.legend-extra { color: var(--muted); }
+.legend-note { color: var(--muted); font-style: italic; }
 
 /* Verse lines with inline highlighting */
 .lines-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 18px; }
@@ -185,9 +189,21 @@ textarea::placeholder { color: var(--placeholder); }
 .v-text { font-size: 13px; line-height: 1.6; word-break: break-word; }
 .v-syl { font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); white-space: nowrap; padding-top: 3px; }
 .v-rime { font-family: 'Space Mono', monospace; font-size: 10px; padding: 2px 7px; border-radius: 20px; white-space: nowrap; font-weight: 700; align-self: start; }
+.v-rime.asso { background: transparent !important; border: 1px dashed currentColor; font-weight: 400; }
+.v-badge { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Richesse de rime */
+.v-level {
+  font-family: 'Space Mono', monospace; font-size: 8px; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 10px; border: 1px solid var(--border2); color: var(--muted); white-space: nowrap;
+}
+.v-level.lvl-multi, .v-level.lvl-riche { background: var(--text); border-color: var(--text); color: var(--bg); }
+.v-level.lvl-suffisante { color: var(--text2); border-color: var(--text2); }
+.v-level.lvl-asso { border-style: dashed; }
 
 /* Highlighted rhyme word */
 .rw { border-radius: 2px; padding: 0 2px; font-weight: 500; cursor: pointer; }
+.rw.rw-asso { background: none; text-decoration: underline dashed; text-underline-offset: 3px; }
 /* Internal rhyme */
 .rw-int { border-radius: 2px; padding: 0 2px; font-weight: 500; cursor: pointer; text-decoration: underline; text-decoration-style: wavy; text-underline-offset: 2px; }
 /* Plain word — clickable for suggestions */
@@ -202,6 +218,30 @@ textarea::placeholder { color: var(--placeholder); }
 .asso-bar { height: 100%; border-radius: 2px; }
 .asso-count { position: absolute; top: 12px; right: 12px; font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); }
 .asso-verses { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); line-height: 1.5; }
+.muted-note { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); }
+.sounds-title { margin-top: 24px; }
+.section-hint { color: var(--muted); font-size: 9px; text-transform: none; letter-spacing: 0; margin-left: 4px; }
+
+/* Sons (voyelles / consonnes) */
+.sound-list { display: flex; flex-direction: column; gap: 3px; }
+.sound-row {
+  display: grid; grid-template-columns: 34px 1fr 28px 38px; grid-template-rows: auto auto; column-gap: 10px;
+  align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 2px; padding: 6px 10px;
+}
+.sound-name { font-family: 'Bebas Neue', sans-serif; font-size: 20px; line-height: 1; grid-row: span 2; }
+.sound-bar { margin-bottom: 0; }
+.sound-count { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); text-align: right; }
+.sound-ratio { font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); text-align: right; }
+.sound-row.hot .sound-ratio, .sound-row.hot .sound-name { color: var(--col1); font-weight: 700; }
+.sound-words { grid-column: 2 / -1; font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Échos multisyllabiques */
+.echo-list { display: flex; flex-direction: column; gap: 4px; }
+.echo-row { background: var(--surface); border: 1px solid var(--border); border-radius: 2px; padding: 8px 10px; }
+.echo-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.echo-sound { font-family: 'Space Mono', monospace; font-size: 11px; font-weight: 700; }
+.echo-nums { font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); margin-left: auto; }
+.echo-lines { font-size: 12px; color: var(--text2); line-height: 1.5; }
 
 /* Cursor on interactive phoneme elements */
 [data-ph] { cursor: pointer; }
@@ -230,7 +270,7 @@ textarea::placeholder { color: var(--placeholder); }
 .suggest-header { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); margin-bottom: 10px; }
 .suggest-header em { color: var(--accent); font-style: normal; }
 [data-theme="light"] .suggest-header em { color: var(--text); }
-.suggest-body { display: flex; flex-direction: column; gap: 14px; max-height: 300px; overflow-y: auto; }
+.suggest-body { display: flex; flex-direction: column; gap: 14px; max-height: 340px; overflow-y: auto; }
 .suggest-section-title { font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; letter-spacing: 0.06em; text-transform: uppercase; flex-wrap: wrap; }
 .suggest-current { background: var(--accent); color: var(--accent-txt); font-size: 8px; padding: 1px 6px; border-radius: 10px; letter-spacing: 0; }
 .suggest-refs { color: var(--muted); font-style: italic; text-transform: none; letter-spacing: 0; }
@@ -243,9 +283,26 @@ textarea::placeholder { color: var(--placeholder); }
 }
 .suggest-chip:hover { background: var(--accent); color: var(--accent-txt); border-color: var(--accent); }
 .suggest-empty { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); }
+.suggest-level { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.suggest-level-name { width: 100%; font-family: 'Space Mono', monospace; font-size: 8px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text2); }
+.level-hint { color: var(--muted); text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.suggest-chip.lvl-multi, .suggest-chip.lvl-riche, .suggest-chip.lvl-homophone,
+.atelier-chip.lvl-multi, .atelier-chip.lvl-riche, .atelier-chip.lvl-homophone { border-color: var(--text2); color: var(--text); font-weight: 700; }
+.suggest-chip.lvl-asso, .atelier-chip.lvl-asso { border-style: dashed; }
+.suggest-chip.approx, .atelier-chip.approx { font-style: italic; }
+.suggest-chip.derived, .atelier-chip.derived { opacity: 0.55; }
 
 /* ── Atelier tab ── */
-.atelier-search { display: flex; gap: 8px; margin-bottom: 20px; }
+.atelier-search { display: flex; gap: 8px; margin-bottom: 10px; }
+.atelier-filters { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.atelier-select {
+  background: var(--surface); border: 1px solid var(--border2); color: var(--text2);
+  font-family: 'Space Mono', monospace; font-size: 10px; padding: 5px 8px; border-radius: 2px; outline: none;
+}
+.atelier-head { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--text2); margin-bottom: 16px; line-height: 1.7; }
+.atelier-head em { font-style: normal; color: var(--text); font-weight: 700; }
+.atelier-guess { font-size: 9px; border: 1px dashed var(--border2); border-radius: 10px; padding: 1px 6px; margin-left: 4px; }
+.atelier-hint { color: var(--muted); font-size: 9px; }
 .atelier-input {
   flex: 1; background: var(--surface); border: 1px solid var(--border2);
   color: var(--text); font-family: 'Space Mono', monospace; font-size: 13px;

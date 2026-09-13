@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Téléchargement de Lexique3 au build — baked dans l'image
 RUN wget -q "http://www.lexique.org/databases/Lexique383/Lexique383.tsv" -O lexique.tsv
 
-COPY app.py .
+COPY *.py .
 
 EXPOSE 5000
 

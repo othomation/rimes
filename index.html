@@ -80,8 +80,14 @@
         <div class="empty-icon">◈</div><p>Lance l'analyse pour voir les assonances</p>
       </div>
       <div id="assoContent" style="display:none">
-        <div class="section-title" style="margin-bottom:14px">Sons dominants</div>
+        <div class="section-title" style="margin-bottom:14px">Fins de vers</div>
         <div class="asso-grid" id="assoGrid"></div>
+        <div class="section-title sounds-title">Échos multisyllabiques <span class="section-hint">— voyelles répétées sur 2 syllabes ou plus</span></div>
+        <div class="echo-list" id="echoList"></div>
+        <div class="section-title sounds-title">Voyelles <span class="section-hint">— ×1.4 et plus = sur-représentée par rapport au français courant</span></div>
+        <div class="sound-list" id="vowelList"></div>
+        <div class="section-title sounds-title">Consonnes <span class="section-hint">— allitérations</span></div>
+        <div class="sound-list" id="consonantList"></div>
       </div>
     </div>
 
@@ -108,9 +114,25 @@
     <div class="tab-content" id="tab-atelier">
       <div class="atelier-search">
         <input type="text" id="atelierInput" class="atelier-input"
-          placeholder="Un mot à rimer…"
+          placeholder="Un mot ou une fin de vers à rimer…"
           onkeydown="if(event.key==='Enter')atelierSearch()" />
         <button class="btn-analyze" onclick="atelierSearch()">Chercher</button>
+      </div>
+      <div class="atelier-filters">
+        <select id="atelierSyl" class="atelier-select" onchange="atelierSearch()" title="Nombre de syllabes du mot proposé">
+          <option value="">Toutes syllabes</option>
+          <option value="1">1 syllabe</option>
+          <option value="2">2 syllabes</option>
+          <option value="3">3 syllabes</option>
+          <option value="4">4 et plus</option>
+        </select>
+        <select id="atelierCat" class="atelier-select" onchange="atelierSearch()">
+          <option value="">Toutes natures</option>
+          <option value="NOM">Noms</option>
+          <option value="VER">Verbes</option>
+          <option value="ADJ">Adjectifs</option>
+          <option value="ADV">Adverbes</option>
+        </select>
       </div>
       <div id="atelierResults">
         <div class="atelier-empty">Entre un mot pour trouver ses rimes</div>
@@ -119,7 +141,7 @@
   </div>
 </main>
 
-<footer>rime. — 100% local</footer>
+<footer>rime. — phonétique Lexique 3.83</footer>
 
 <script src="script.js"></script>
 </body>
