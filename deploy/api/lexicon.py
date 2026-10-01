@@ -1,6 +1,7 @@
 """Dictionnaire phonétique (Lexique3) et recherche de rimes par richesse."""
 import csv
 import heapq
+import re
 from bisect import bisect_left
 from collections import Counter, defaultdict
 
@@ -8,6 +9,19 @@ import phonetics as P
 
 LEVELS = ('homophone', 'multi', 'riche', 'suffisante', 'pauvre')
 FUNCTION_CATS = ('ART', 'PRO', 'PRE', 'CON', 'AUX', 'LIA', 'ADJ:pos', 'ADJ:dem', 'ADJ:ind', 'ADJ:int')
+# Mots pleins pour Lexique mais sans accent dans le vers
+STOP_WORDS = frozenset(['pas', 'plus', 'ne', 'bien', 'très', 'trop', 'tout', 'tous', 'toute', 'toutes', 'si', 'là',
+                        'y', 'en', 'oui', 'non', 'ouais', 'comme', 'puis', 'donc', 'ça', 'cela', 'ceci', 'jamais',
+                        'est-ce'])
+# Auxiliaires et verbes « légers » (je fais le jeu, j'peux pas)
+STOP_LEMMAS = frozenset(['être', 'avoir', 'faire', 'aller', 'pouvoir', 'vouloir', 'devoir', 'falloir'])
+# Pronoms toujours accentués
+TONIC = frozenset(['moi', 'toi', 'soi', 'eux', 'rien', 'personne', "quelqu'un", 'chacun', 'chacune'])
+# Pronoms accrochés au verbe : dis-moi, laisse-les
+ENCLITICS = frozenset(['moi', 'toi', 'soi', 'lui', 'leur', 'nous', 'vous', 'le', 'la', 'les', 'y', 'en'])
+DETERMINERS = frozenset(['le', 'la', 'les', 'un', 'une', 'du', 'des', 'ce', 'cet', 'cette', 'ces', 'mon', 'ton', 'son',
+                         'ma', 'ta', 'sa', 'mes', 'tes', 'ses', 'notre', 'votre', 'leur', 'nos', 'vos', 'leurs',
+                         'au', 'aux'])
 
 # Regroupements pour compter les sons (assonances / allitérations)
 SOUND_CLASSES = {
@@ -19,8 +33,11 @@ SOUND_CLASSES = {
 }
 VOWEL_SOUNDS = frozenset(SOUND_CLASSES[c] for c in P.VOWELS if c in SOUND_CLASSES)
 
-_ELISIONS = frozenset(['l', 'j', 't', 'm', 's', 'n', 'd', 'c', 'qu', 'jusqu', 'lorsqu', 'puisqu'])
+# Élisions, avec la consonne qui reste prononcée (l'heure = l9R)
+_ELISIONS = {'l': 'l', 'j': 'Z', 't': 't', 'm': 'm', 's': 's', 'n': 'n', 'd': 'd', 'c': 's',
+             'qu': 'k', 'jusqu': 'Zysk', 'lorsqu': 'lORsk', 'puisqu': 'p8isk'}
 _PLURAL_SUBJECTS = frozenset(['ils', 'elles', "qu'ils", "qu'elles"])
+_STRETCHED = re.compile(r'(.)\1{2,}')   # ouaaais, flowww
 
 
 def _prefix_range(keys, prefix):
@@ -31,6 +48,8 @@ class Lexicon:
     def __init__(self, path):
         # ortho → [{phon, cat, lemme, freq, v3p}], le plus fréquent d'abord
         self.pron = {}
+        # ortho → lecture nom la plus fréquente (« le son », « l'été »)
+        self.nouns = {}
         # entrées de suggestion, une par (lemme, prononciation)
         self.entries = []
         self.baseline = Counter()
@@ -39,6 +58,7 @@ class Lexicon:
 
     def _load(self, path):
         variants = defaultdict(dict)
+        nouns = defaultdict(dict)
         best_form = {}
         with open(path, encoding='utf-8-sig') as f:
             reader = csv.DictReader(f, delimiter='\t')
@@ -65,6 +85,10 @@ class Lexicon:
                 v['freq'] += freq
                 v['lemmes'].add(lemme)
                 v['v3p'] = v['v3p'] or '3p' in (row.get(c_infover) or '')
+                if cat == 'NOM':
+                    nv = nouns[word].setdefault(phon, {'phon': phon, 'cat': cat, 'lemmes': set(), 'freq': 0.0})
+                    nv['freq'] += freq
+                    nv['lemmes'].add(lemme)
 
                 for ch in phon:
                     sound = SOUND_CLASSES.get(ch)
@@ -79,6 +103,7 @@ class Lexicon:
 
         for word, vs in variants.items():
             self.pron[word] = sorted(vs.values(), key=lambda v: -v['freq'])
+        self.nouns = {word: max(vs.values(), key=lambda v: v['freq']) for word, vs in nouns.items()}
         # Une même graphie peut venir de deux lemmes (« suis » : être / suivre)
         by_form = {}
         for e in best_form.values():
@@ -105,26 +130,46 @@ class Lexicon:
         """Prononciation d'un mot tel qu'écrit dans un texte.
 
         Renvoie {phon, guess, cat, lemmes, word} ou None si le token n'est pas un mot.
-        `prev` (mot précédent) sert à trancher « ils président » / « le président ».
+        `prev` (mot précédent) sert à trancher « ils président » / « le président » / « le son ».
         """
         w = P.normalize_word(token).strip("'-")
-        if not w:
+        if not w or len(w) > 48:     # pas un mot (et pas de récursion ni de g2p sans fin)
             return None
+        if w not in self.pron and _STRETCHED.search(w):
+            one, two = _STRETCHED.sub(r'\1', w), _STRETCHED.sub(r'\1\1', w)
+            w = two if two in self.pron and one not in self.pron else one
         if w in self.pron:
             vs = self.pron[w]
             chosen = vs[0]
             if prev in _PLURAL_SUBJECTS:
                 chosen = next((v for v in vs if v['v3p']), chosen)
+            noun = self.nouns.get(w)
+            # « le son », « l'été » : même prononciation, mais un nom, donc un mot accentué
+            # (jamais de changement de prononciation : « je le vis » reste /vi/)
+            if (prev in DETERMINERS and noun and noun['phon'] == chosen['phon'] and noun['freq'] >= 10
+                    and chosen['cat'] != 'NOM' and not chosen['cat'].startswith('AUX')
+                    and not chosen['lemmes'] <= {'être', 'avoir'} and w not in STOP_WORDS):
+                chosen = noun
             return {'word': w, 'phon': chosen['phon'], 'guess': False,
                     'cat': chosen['cat'], 'lemmes': chosen['lemmes']}
         if "'" in w:
+            head, _, tail = w.partition("'")
+            if head in _ELISIONS and tail:
+                # l' se lit comme « le » (l'été est un nom) ; la consonne élidée reste prononcée
+                info = self.phonetize(tail, 'le' if head == 'l' else prev)
+                return info and {**info, 'phon': _ELISIONS[head] + info['phon'], 'text': w}
             head, _, tail = w.rpartition("'")
-            if head in _ELISIONS or not tail:
-                return self.phonetize(tail or head, prev)
+            if not tail:
+                return self.phonetize(head, prev)
             parts = [self.phonetize(p) for p in (head, tail)]
             return self._join(w, parts)
         if '-' in w:
-            return self._join(w, [self.phonetize(p) for p in w.split('-')])
+            parts = [self.phonetize(p) for p in w.split('-')]
+            info = self._join(w, parts)
+            # dis-moi, laisse-moi : le pronom accroché ne change pas le verbe
+            if info and parts[0] and w.rsplit('-', 1)[1] in ENCLITICS:
+                info['lemmes'] = parts[0]['lemmes']
+            return info
         phon = P.g2p(w)
         if not phon:
             return None

@@ -13,7 +13,7 @@ print('Loading Lexique3…', flush=True)
 lexicon = Lexicon(LEXIQUE_PATH)
 print(f'Lexique3 loaded — {len(lexicon)} mots, {len(lexicon.entries)} entrées de rime', flush=True)
 
-MAX_LINES = 400
+MAX_CHARS = 20000   # ~5 morceaux ; l'analyse s'arrête de toute façon à 400 vers
 
 
 @app.after_request
@@ -39,10 +39,13 @@ def query():
 
 @app.route('/analyze', methods=['POST'])
 def analyze_route():
-    lines = (request.get_json(silent=True) or {}).get('lines')
+    body = request.get_json(silent=True)
+    lines = body.get('lines') if isinstance(body, dict) else None
     if not isinstance(lines, list) or not all(isinstance(l, str) for l in lines):
         return jsonify({'error': 'lines doit être une liste de chaînes'}), 400
-    return jsonify(analyze(lines[:MAX_LINES], lexicon))
+    if len(lines) + sum(map(len, lines)) > MAX_CHARS:   # retours à la ligne compris
+        return jsonify({'error': 'texte trop long'}), 413
+    return jsonify(analyze(lines, lexicon))
 
 
 @app.route('/health')

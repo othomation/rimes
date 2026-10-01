@@ -11,7 +11,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rime — Analyse de schémas de rimes</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Bebas+Neue&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 
@@ -27,12 +27,12 @@
   <!-- LEFT -->
   <div class="panel-left">
     <div class="panel-header">
-      <span class="panel-label">Paroles</span>
+      <span class="panel-label">Paroles <span class="panel-hint" title="Lignes ignorées par l'analyse"># titre · [section] · (adlib)</span></span>
       <div style="display:flex;gap:6px">
         <button class="btn-sm" onclick="saveToHistory()">Sauver</button>
       </div>
     </div>
-    <textarea id="input" placeholder="Colle tes paroles ici, un vers par ligne...&#10;&#10;Ctrl+Entrée pour analyser" oninput="updateCount(); scheduleAnalyze()" onblur="immediateAnalyze()"></textarea>
+    <textarea id="input" placeholder="Colle tes paroles ici, un vers par ligne...&#10;&#10;# titre ou commentaire — ignoré&#10;[Couplet 1] — section, ignorée&#10;(adlib) — ignoré, même en fin de vers&#10;ligne vide — nouvelle strophe&#10;&#10;Ctrl+Entrée pour analyser" oninput="updateCount(); scheduleAnalyze()" onblur="immediateAnalyze()"></textarea>
     <div class="panel-footer">
       <button class="btn-analyze" onclick="analyze()">Analyser</button>
       <button class="btn-clear" onclick="clearAll()">Effacer</button>
@@ -69,7 +69,7 @@
           <div class="pattern-chips" id="patternChips"></div>
         </div>
         <div class="legend" id="legendEl"></div>
-        <div class="section-title">Vers annotés <span style="color:var(--muted);font-size:9px;margin-left:8px">— souligné = rime interne</span></div>
+        <div class="section-title">Vers annotés <span style="color:var(--muted);font-size:9px;margin-left:8px">— ondulé = rime interne · pointillé = famille interne · ↺ = rimes internes du vers · gris = ignoré</span></div>
         <div class="lines-list" id="linesList"></div>
       </div>
     </div>
@@ -143,6 +143,6 @@
 
 <footer>rime. — phonétique Lexique 3.83</footer>
 
-<script src="script.js"></script>
+<script src="script.js?v=2"></script>
 </body>
 </html>

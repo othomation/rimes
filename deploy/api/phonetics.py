@@ -6,12 +6,16 @@ Notation : celle de Lexique3 (colonne `phon`).
   consonnes p b t d k g f v s z S(ch) Z(j) m n N(gn) G(ng) l R x
 """
 import re
+from functools import lru_cache
 
 VOWELS = frozenset('aeEioOuy29°@51§')
 
 # Oppositions que la plupart des locuteurs (et des rappeurs) ne font plus :
 # é/è, o ouvert/fermé, eu ouvert/fermé/schwa, in/un.
 _LOOSE = str.maketrans({'E': 'e', 'O': 'o', '9': '2', '°': '2', '1': '5'})
+# Après la voyelle, sourde et sonore se confondent à l'oreille : rides ~ rites, use ~ bus
+_VOICING = str.maketrans({'b': 'p', 'd': 't', 'g': 'k', 'v': 'f', 'z': 's', 'Z': 'S'})
+_APOS = str.maketrans(dict.fromkeys('‘’ʼ`´′', "'"))
 
 _DISPLAY = {
     'a': 'a', 'e': 'é', 'E': 'è', 'i': 'i', 'o': 'o', 'O': 'o', 'u': 'ou', 'y': 'u',
@@ -20,6 +24,7 @@ _DISPLAY = {
 }
 
 
+@lru_cache(maxsize=4096)
 def loose(phon):
     return phon.translate(_LOOSE)
 
@@ -36,12 +41,21 @@ def last_vowel_index(phon):
     return -1
 
 
+@lru_cache(maxsize=4096)
 def rhyme_key(phon):
     """Dernière voyelle + consonnes qui suivent, en notation tolérante."""
     i = last_vowel_index(phon)
     return loose(phon[i:]) if i >= 0 else None
 
 
+@lru_cache(maxsize=4096)
+def voiced_key(phon):
+    """Clé de rime tolérant sourde/sonore dans la coda seulement : `Rid` et `Rit` → `it`."""
+    key = rhyme_key(phon)
+    return key and key.translate(_VOICING)
+
+
+@lru_cache(maxsize=4096)
 def vowel_key(phon):
     i = last_vowel_index(phon)
     return loose(phon[i]) if i >= 0 else None
@@ -51,6 +65,7 @@ def vowels(phon):
     return [c for c in loose(phon) if c in VOWELS]
 
 
+@lru_cache(maxsize=4096)
 def syllables(phon):
     return sum(1 for c in phon if c in VOWELS)
 
@@ -84,7 +99,7 @@ def compare(a, b):
 
     Renvoie None si ni rime ni assonance, sinon un dict :
       kind  'rime' | 'asso'
-      k     phonèmes communs depuis la fin (tolérant)
+      k     phonèmes communs depuis la fin (tolérant, sourde/sonore admise dans la coda)
       syl   syllabes communes
       exact les phonèmes communs sont identiques sans tolérance
       level richesse (rimes) ou None
@@ -93,8 +108,9 @@ def compare(a, b):
     if not ka or not kb:
         return None
     la, lb = loose(a), loose(b)
-    if ka == kb:
-        k = common_suffix(la, lb)
+    if voiced_key(a) == voiced_key(b):
+        n = len(ka)
+        k = n + common_suffix(la[:-n], lb[:-n])
         syl = syllables(la[len(la) - k:])
         return {
             'kind': 'rime', 'k': k, 'syl': syl,
@@ -289,7 +305,7 @@ for _g, _l, _r, _p in _RULES_SRC:
 
 
 def normalize_word(word):
-    w = word.lower().replace('œ', 'oe').replace('æ', 'ae').replace('’', "'")
+    w = word.lower().replace('œ', 'oe').replace('æ', 'ae').translate(_APOS)
     return re.sub(r"[^a-zàâäçéèêëîïôöùûüÿ'\-]", '', w).replace('ÿ', 'y')
 
 
