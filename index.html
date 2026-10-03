@@ -26,9 +26,24 @@
       <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
       <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
       <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
+      <div class="menu-label">Google Drive</div>
+      <div id="driveOff">
+        <label class="menu-field">Nom du dossier dans ton Drive
+          <input type="text" id="driveFolderName" placeholder="Rime" maxlength="100" autocomplete="off">
+        </label>
+        <button class="menu-item" onclick="connectDrive()">Synchroniser avec Google Drive</button>
+        <p class="menu-note">Un fichier .txt par texte sauvé. Déplace ou renomme le dossier dans Drive : Rime le suit.</p>
+      </div>
+      <div id="driveOn" hidden>
+        <p class="menu-note" id="driveNote"></p>
+        <button class="menu-item" onclick="syncNow()">Synchroniser maintenant</button>
+        <button class="menu-item" onclick="renameDriveFolder()">Renommer le dossier…</button>
+        <button class="menu-item" onclick="disconnectDrive()">Arrêter la synchro</button>
+      </div>
     </div>
   </div>
   <span class="doc-state" id="docState"></span>
+  <button class="drive-btn" id="driveBtn" hidden></button>
   <div class="spacer"></div>
   <div class="seg" role="group" aria-label="Surlignage du texte">
     <button data-mode="all" aria-pressed="true" title="Rimes de fin et rimes internes">Tout</button>

@@ -795,7 +795,10 @@ function toggleMenu(btn) {
   const open = menu.hidden;
   closeMenus();
   if (!open) return;
-  if (menu.id === 'docMenu') renderDocList();
+  if (menu.id === 'docMenu') {
+    renderDocList();
+    loadGis().catch(() => {});   // prêt avant le clic : la fenêtre Google doit s'ouvrir dans le clic même
+  }
   menu.hidden = false;
   btn.setAttribute('aria-expanded', 'true');
 }
@@ -825,7 +828,7 @@ function renderDocList() {
   $('docList').innerHTML = docs.map(d => `
     <div class="doc-item${d.id === doc.id ? ' current' : ''}">
       <button class="doc-open" onclick="openDoc(${d.id})">
-        <span class="doc-name">${escHtml(docTitle(d.text) || 'Sans titre')}</span>
+        <span class="doc-name">${escHtml(docTitle(d.text) || 'Sans titre')}${d.conflict ? ' <span class="doc-conflict">(conflit)</span>' : ''}</span>
         <span class="doc-meta">${new Date(d.updated).toLocaleDateString('fr')} · ${d.text.split('\n').filter(l => rowType(l) === 'verse').length} vers</span>
       </button>
       <button class="doc-del" onclick="deleteDoc(${d.id})" aria-label="Supprimer ce texte">×</button>
@@ -835,7 +838,9 @@ function renderDocList() {
 function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
-  const item = { id: doc.id ?? Date.now(), text, updated: Date.now() };
+  // pending : à envoyer sur Drive ; une copie « (conflit) » sauvée devient un texte ordinaire
+  const { conflict, ...prev } = docs.find(d => d.id === doc.id) || { id: Date.now() };
+  const item = { ...prev, text, updated: Date.now(), pending: true };
   // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
   const next = [item, ...docs.filter(d => d.id !== item.id)];
   if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
@@ -844,6 +849,7 @@ function saveDoc() {
   persistDraft();
   renderDocState();
   toast('Texte enregistré ✓');
+  requestSync();
 }
 
 function newDoc() {
@@ -864,9 +870,11 @@ function deleteDoc(id) {
   if (!item || !confirm(`Supprimer « ${docTitle(item.text) || 'Sans titre'} » des textes sauvés ?`)) return;
   docs = docs.filter(d => d.id !== id);
   store('rime-history', docs);
+  if (item.drive) { drive.trash.push(item.drive.id); saveDrive(); }   // à la corbeille de Drive
   if (doc.id === id) { doc.id = null; persistDraft(); }
   renderDocList();
   renderDocState();
+  requestSync();
 }
 
 function setText(text, id) {
@@ -932,11 +940,318 @@ async function importFiles(files) {
   renderDocState();
   toast(`${added.length} texte${added.length > 1 ? 's' : ''} importé${added.length > 1 ? 's' : ''}${note ? ` (${note})` : ''}`);
   if (added.length === 1) openDoc(added[0].id);
+  requestSync();
 }
 
 $('importInput').addEventListener('change', async e => {
   await importFiles([...e.target.files]);
   e.target.value = '';
+});
+
+// ── Google Drive : un .txt par texte sauvé, dans un dossier « Rime » ──
+// Accès limité aux fichiers créés par Rime (drive.file). Sans serveur, Google ne donne qu'un jeton
+// d'une heure : passé ce délai, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
+const GOOGLE_CLIENT_ID = '380243851119-hod3g0vlnqsgnkquhglen3ppsqi015or.apps.googleusercontent.com';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+// on : synchro activée ; folder, folderName : le dossier des textes (choisi par l'utilisateur, « Rime » par défaut) ;
+// wantedName : nom demandé, appliqué à la prochaine synchro ; trash : fichiers de textes supprimés, à mettre à la corbeille
+const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], ...stored('rime-drive', {}) };
+const FOLDER_TYPE = 'application/vnd.google-apps.folder';
+const saveDrive = () => store('rime-drive', drive);
+let driveToken = (() => {
+  try {
+    const t = JSON.parse(sessionStorage.getItem('rime-drive-token'));
+    return t?.exp > Date.now() ? t : null;
+  } catch { return null; }
+})();
+let driveStatus = { state: 'auth', at: null, error: '' };   // idle | sync | auth | error
+let syncing = null, syncAgain = false, syncTimer = null, lastSync = 0, tokenClient = null, gisLoading = null;
+
+// Script Google chargé seulement si Drive sert
+function loadGis() {
+  return gisLoading ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = resolve;
+    s.onerror = () => { gisLoading = null; reject(new Error('Google injoignable')); };
+    document.head.appendChild(s);
+  });
+}
+
+// Ouvre la fenêtre Google « Autoriser » : à appeler dans un clic, sinon le navigateur la bloque
+function connectDrive() {
+  if (!drive.on) {
+    drive.wantedName = $('driveFolderName').value.trim();
+    saveDrive();
+  }
+  const oauth = window.google?.accounts?.oauth2;
+  if (!oauth) {
+    loadGis().then(() => toast('Google est prêt : clique à nouveau'), () => toast('Impossible de joindre Google'));
+    return;
+  }
+  tokenClient ||= oauth.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: DRIVE_SCOPE,
+    callback: resp => {
+      if (resp.error || !oauth.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { toast('Accès à Google Drive refusé'); return; }
+      driveToken = { value: resp.access_token, exp: Date.now() + (resp.expires_in - 60) * 1000 };
+      try { sessionStorage.setItem('rime-drive-token', JSON.stringify(driveToken)); } catch {}
+      if (!drive.on) { drive.on = true; saveDrive(); }
+      syncDrive();
+    },
+    error_callback: e => {
+      if (e.type === 'popup_failed_to_open') toast('Fenêtre Google bloquée : autorise les popups pour ce site');
+      else if (e.type !== 'popup_closed') toast('Connexion à Google impossible');
+    },
+  });
+  tokenClient.requestAccessToken({ prompt: drive.on ? '' : 'consent' });
+}
+
+const hasToken = () => driveToken?.exp > Date.now();
+const syncNow = () => hasToken() ? syncDrive() : connectDrive();
+
+function disconnectDrive() {
+  if (!confirm('Arrêter la synchro avec Google Drive ? Tes textes restent dans ton Drive et dans ce navigateur.')) return;
+  if (driveToken) window.google?.accounts?.oauth2?.revoke(driveToken.value, () => {});
+  dropDriveToken();
+  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [] });
+  saveDrive();
+  // Plus de lien : à la reconnexion, les fichiers sont retrouvés par l'id du texte qu'ils portent
+  docs.forEach(d => { delete d.drive; });
+  store('rime-history', docs);
+  renderDrive();
+}
+
+function dropDriveToken() {
+  driveToken = null;
+  try { sessionStorage.removeItem('rime-drive-token'); } catch {}
+}
+
+const authError = () => Object.assign(new Error('Reconnexion à Google nécessaire'), { auth: true });
+
+// Appel à l'API Drive ; null si le fichier n'existe pas
+async function driveApi(path, { method = 'GET', json, upload, raw = false } = {}) {
+  if (!hasToken()) throw authError();
+  const init = { method, headers: { Authorization: `Bearer ${driveToken.value}` } };
+  if (json) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(json);
+  }
+  if (upload) {
+    // Métadonnées et contenu en une requête
+    const b = `rime-${Math.random().toString(36).slice(2)}`;
+    init.headers['Content-Type'] = `multipart/related; boundary=${b}`;
+    init.body = `--${b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(upload.meta)}\r\n`
+      + `--${b}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${upload.text}\r\n--${b}--`;
+  }
+  const res = await fetch(`https://www.googleapis.com/${upload ? 'upload/' : ''}drive/v3/${path}`, init);
+  if (res.status === 401) { dropDriveToken(); throw authError(); }
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Google Drive a répondu ${res.status}`);
+  return raw ? res.text() : res.json();
+}
+
+// Le dossier des textes : celui de la dernière synchro, sinon celui que Rime a déjà créé, sinon un nouveau.
+// Rime ne voit que les dossiers qu'il a créés : il retrouve le sien même déplacé ou renommé dans Drive.
+async function driveFolder() {
+  let f = drive.folder && await driveApi(`files/${drive.folder}?fields=id,name,trashed`);
+  if (!f || f.trashed) {
+    // Dossier perdu (supprimé, autre compte) : les anciens liens ne valent plus, rien n'est effacé ici
+    docs.forEach(d => { delete d.drive; });
+    drive.trash = [];
+    const q = encodeURIComponent(`mimeType = '${FOLDER_TYPE}' and trashed = false`);
+    f = (await driveApi(`files?q=${q}&orderBy=createdTime&fields=files(id,name)`))?.files?.[0]
+      ?? await driveApi('files?fields=id,name', { method: 'POST', json: { name: drive.wantedName || 'Rime', mimeType: FOLDER_TYPE } });
+  }
+  if (drive.wantedName && f.name !== drive.wantedName) {
+    f = await driveApi(`files/${f.id}?fields=id,name`, { method: 'PATCH', json: { name: drive.wantedName } }) ?? f;
+  }
+  Object.assign(drive, { folder: f.id, folderName: f.name, wantedName: '' });
+  saveDrive();
+  return f.id;
+}
+
+// Tous les fichiers de textes de Rime, où qu'ils soient : sorti du dossier dans Drive, un texte reste synchronisé
+async function driveList() {
+  const q = encodeURIComponent("mimeType = 'text/plain' and trashed = false");
+  const files = [];
+  let page = '';
+  do {
+    const r = await driveApi(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,version,modifiedTime,appProperties)${page ? `&pageToken=${page}` : ''}`);
+    files.push(...(r?.files || []));
+    page = r?.nextPageToken || '';
+  } while (page);
+  return files.filter(f => f.appProperties?.rimeId);
+}
+
+async function renameDriveFolder() {
+  const name = prompt('Nouveau nom du dossier dans ton Drive', drive.folderName || 'Rime')?.trim();
+  if (!name || name === drive.folderName) return;
+  drive.wantedName = name;   // appliqué par la synchro, même après une reconnexion
+  saveDrive();
+  syncNow();
+}
+
+const driveName = d => `${(docTitle(d.text) || 'Sans titre').slice(0, 80)}${d.conflict ? ' (conflit)' : ''}.txt`;
+const remoteTime = f => Date.parse(f.modifiedTime) || Date.now();
+
+// Envoie un texte : met à jour son fichier, ou en crée un qui porte l'id du texte
+async function drivePush(d, folder) {
+  const { id, text } = d;
+  const meta = { name: driveName(d) };
+  let f = d.drive && await driveApi(`files/${d.drive.id}?uploadType=multipart&fields=id,version`, { method: 'PATCH', upload: { meta, text } });
+  f ||= await driveApi('files?uploadType=multipart&fields=id,version', {
+    method: 'POST',
+    upload: { meta: { ...meta, mimeType: 'text/plain', parents: [folder], appProperties: { rimeId: String(id) } }, text },
+  });
+  // Le texte a pu être sauvé ou supprimé pendant l'envoi : on le retrouve par son id
+  const cur = docs.find(x => x.id === id);
+  if (!cur) { drive.trash.push(f.id); return; }
+  cur.drive = { id: f.id, rev: f.version };
+  if (cur.text === text) cur.pending = false;
+}
+
+function addDoc(fields) {
+  const ids = new Set(docs.map(d => d.id));
+  let id = Number.isSafeInteger(fields.id) && !ids.has(fields.id) ? fields.id : Date.now();
+  while (ids.has(id)) id++;
+  const d = { ...fields, id };
+  docs.unshift(d);
+  return d;
+}
+
+async function runDriveSync() {
+  const folder = await driveFolder();
+  // 1. Les textes supprimés dans Rime vont à la corbeille de Drive (récupérables 30 jours)
+  for (const id of [...drive.trash]) {
+    await driveApi(`files/${id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
+    drive.trash = drive.trash.filter(x => x !== id);
+    saveDrive();
+  }
+  const remote = await driveList();
+  const byId = new Map(remote.map(f => [f.id, f]));
+  const byRime = new Map(remote.map(f => [f.appProperties?.rimeId, f]));
+  const seen = new Set();
+  // 2. Chaque texte sauvé face à son fichier
+  for (const id of docs.map(d => d.id)) {
+    let d = docs.find(x => x.id === id);
+    if (!d) continue;
+    const f = (d.drive && byId.get(d.drive.id)) || byRime.get(String(id));
+    if (!f) {
+      // Fichier supprimé dans Drive : le texte suit, sauf s'il a des modifications à envoyer
+      if (d.drive && !d.pending) {
+        docs = docs.filter(x => x !== d);
+        if (doc.id === id) { doc.id = null; persistDraft(); }
+        continue;
+      }
+      delete d.drive;
+      await drivePush(d, folder);
+      continue;
+    }
+    seen.add(f.id);
+    if (d.drive?.id === f.id && d.drive.rev === f.version) {
+      if (d.pending) await drivePush(d, folder);
+      continue;
+    }
+    // Modifié dans Drive (ou pas encore relié) : on compare les textes
+    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+    d = docs.find(x => x.id === id);
+    if (!d) continue;
+    if (text === d.text) {
+      d.drive = { id: f.id, rev: f.version };
+      d.pending = false;
+      continue;
+    }
+    const editing = d.id === doc.id && isDirty();
+    if (!d.pending && !editing) {
+      Object.assign(d, { text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
+      if (d.id === doc.id) {
+        setText(text, d.id);
+        toast(`« ${docTitle(text) || 'Sans titre'} » mis à jour depuis Drive`);
+      }
+      continue;
+    }
+    if (!d.pending) continue;   // modifications non sauvées dans l'éditeur : on attend « Sauver »
+    // Modifié des deux côtés : la version de Drive devient une copie « (conflit) », la nôtre part sur le fichier
+    d.drive = { id: f.id, rev: f.version };
+    addDoc({ text, updated: remoteTime(f), conflict: true, pending: true });
+    await drivePush(d, folder);
+  }
+  // 3. Les fichiers inconnus ici : textes sauvés depuis un autre appareil
+  for (const f of remote) {
+    if (seen.has(f.id) || drive.trash.includes(f.id) || docs.some(d => d.drive?.id === f.id)) continue;
+    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+    if (docs.some(d => d.drive?.id === f.id)) continue;
+    addDoc({ id: Number(f.appProperties?.rimeId), text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
+  }
+  // 4. Les copies « (conflit) » créées plus haut
+  for (const d of docs.filter(x => !x.drive)) await drivePush(d, folder);
+}
+
+// Une seule synchro à la fois ; une demande pendant la synchro en relance une derrière
+async function syncDrive() {
+  if (!drive.on) return;
+  if (syncing) { syncAgain = true; return syncing; }
+  clearTimeout(syncTimer);
+  syncing = syncOnce();
+  try { await syncing; } finally { syncing = null; }
+  if (syncAgain) { syncAgain = false; return syncDrive(); }
+}
+
+async function syncOnce() {
+  setDriveStatus('sync');
+  try {
+    if (!hasToken()) throw authError();
+    await runDriveSync();
+    lastSync = Date.now();
+    setDriveStatus('idle');
+  } catch (e) {
+    setDriveStatus(e.auth ? 'auth' : 'error', e.message);
+  }
+  docs.sort((a, b) => b.updated - a.updated);
+  store('rime-history', docs);
+  saveDrive();
+  renderDocState();
+  if (!$('docMenu').hidden) renderDocList();
+}
+
+function requestSync(delay = 1500) {
+  if (!drive.on) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncDrive, delay);
+}
+
+function setDriveStatus(state, error = '') {
+  driveStatus = { state, error, at: state === 'idle' ? new Date() : driveStatus.at };
+  renderDrive();
+}
+
+function renderDrive() {
+  const { state, at, error } = driveStatus;
+  const time = at ? at.toLocaleTimeString('fr', { hour: '2-digit', minute: '2-digit' }) : '';
+  const synced = time ? `synchronisé à ${time}` : 'connecté';
+  const note = {
+    idle: drive.folderName ? `Dossier « ${drive.folderName} » · ${synced}` : `Google Drive ${synced}`,
+    sync: 'Synchronisation avec Google Drive…',
+    auth: 'L\'accès à Google Drive a expiré : reconnecte-toi pour synchroniser',
+    error: `Synchro impossible : ${error}`,
+  }[state];
+  const btn = $('driveBtn');
+  btn.hidden = !drive.on;
+  btn.textContent = { idle: 'Drive à jour', sync: 'Synchro…', auth: 'Reconnecter Drive', error: 'Erreur Drive' }[state];
+  btn.classList.toggle('warn', state === 'auth' || state === 'error');
+  btn.dataset.tip = note;
+  $('driveOff').hidden = drive.on;
+  $('driveOn').hidden = !drive.on;
+  $('driveNote').textContent = note;
+}
+
+$('driveBtn').addEventListener('click', syncNow);
+$('driveFolderName').addEventListener('keydown', e => { if (e.key === 'Enter') { closeMenus(); connectDrive(); } });
+// Retour sur l'onglet : on récupère ce qui a pu changer ailleurs
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && drive.on && hasToken() && Date.now() - lastSync > 30000) syncDrive();
 });
 
 // ── Export ──
@@ -1227,6 +1542,11 @@ addEventListener('resize', () => layoutStrip());
   ta.value = doc.text || '';
   applyPrefs();
   renderDocState();
+  renderDrive();
+  if (drive.on) {
+    loadGis().catch(() => {});
+    if (hasToken()) syncDrive();
+  }
   setResult(null);
   if (ta.value.trim()) analyze();
   document.fonts?.ready.then(() => layoutStrip());

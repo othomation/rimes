@@ -10,6 +10,12 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
   - `renderEditor()` reconstruit les rangées depuis `ta.value` à chaque frappe ; `patch()` ne remplace que les rangées changées. Une ligne reprend les surlignages de la ligne analysée de même texte (`matchVerses`).
   - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`, `{id, text, updated}`) dans `localStorage`, sans plafond.
   - Sauvegarde exportée : `{app: 'rime', version: 1, exported, texts: [...]}`. L'import accepte ce format et des `.txt`, et n'écrase jamais un texte sauvé.
+  - Synchro Google Drive facultative, sans serveur : un `.txt` par texte sauvé, avec la permission `drive.file`. Le fichier porte l'id du texte dans `appProperties.rimeId`.
+    - Le nom du dossier est choisi à la connexion (« Rime » par défaut) et renommable depuis Rime. Rime ne voit que ce qu'il a créé : il retrouve son dossier et ses fichiers même déplacés ou renommés dans Drive, et un fichier sorti du dossier reste synchronisé.
+    - Le script Google Identity Services n'est chargé que si Drive sert. Son jeton d'accès dure une heure ; ensuite, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
+    - Un texte modifié des deux côtés garde les deux versions : celle de Drive devient une copie « (conflit) ». Un texte supprimé dans Rime va à la corbeille Drive.
+    - État dans `rime-drive` (`localStorage`) et jeton dans `rime-drive-token` (`sessionStorage`). Les textes sauvés gagnent `drive: {id, rev}` et `pending`.
+    - Projet Google Cloud de Rime : ID client OAuth dans `GOOGLE_CLIENT_ID`, avec pour origines autorisées `https://rime.menace.cloud` et `http://localhost:8080`.
 - `deploy/api/` : API Flask.
   - `app.py` : routes `POST /analyze`, `GET /query` (suggestions) et `GET /health`, limites de taille.
   - `analysis.py` : marqueurs et types de lignes, rimes de fin, assonances, rimes internes (`_internal`), sons, échos.
