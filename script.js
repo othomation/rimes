@@ -29,7 +29,6 @@ const ROW_NOTES = {
 // Éditeur : hauteur d'une ligne (--row) ; la bande auto laisse au texte au moins MIN_TEXT
 const ROW = 32;
 const MIN_STRIP = 150, MAX_STRIP = 760, MIN_TEXT = 360;
-const MAX_DOCS = 50;
 
 const $ = id => document.getElementById(id);
 const ta = $('input'), editor = $('editor'), mirror = $('mirror'), gutter = $('gutter'), strip = $('strip'), metaCol = $('meta');
@@ -836,8 +835,9 @@ function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
   const item = { id: doc.id ?? Date.now(), text, date: new Date().toLocaleDateString('fr') };
-  const next = [item, ...docs.filter(d => d.id !== item.id)].slice(0, MAX_DOCS);
-  if (!store('rime-history', next)) { toast('Impossible d\'enregistrer : stockage du navigateur indisponible'); return; }
+  // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
+  const next = [item, ...docs.filter(d => d.id !== item.id)];
+  if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
   docs = next;
   doc.id = item.id;
   persistDraft();
