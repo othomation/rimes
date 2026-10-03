@@ -10,11 +10,18 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
   - `renderEditor()` reconstruit les rangées depuis `ta.value` à chaque frappe ; `patch()` ne remplace que les rangées changées. Une ligne reprend les surlignages de la ligne analysée de même texte (`matchVerses`).
   - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`, `{id, text, updated}`) dans `localStorage`, sans plafond.
   - Sauvegarde exportée : `{app: 'rime', version: 1, exported, texts: [...]}`. L'import accepte ce format et des `.txt`, et n'écrase jamais un texte sauvé.
+  - Historique des versions : une copie complète du texte à chaque « Sauver » qui le change, dans IndexedDB (base `rime`, magasin `versions`, index `docId`).
+    - Le diff est calculé à l'affichage : plus longue sous-suite commune sur les lignes, puis sur les mots (`diffRows`).
+    - Mode Versions (bouton ou Ctrl+Maj+H) : la comparaison remplace l'éditeur, masqué mais pas détruit pour garder sa pile d'annulation, et la liste remplace le panneau.
+    - Rien n'est supprimé automatiquement ; une version épinglée ne se supprime pas. Supprimer un texte supprime son historique.
+    - Avant qu'une synchro Drive remplace un texte, la version locale est gardée.
   - Synchro Google Drive facultative, sans serveur : un `.txt` par texte sauvé, avec la permission `drive.file`. Le fichier porte l'id du texte dans `appProperties.rimeId`.
     - Le nom du dossier est choisi à la connexion (« Rime » par défaut) et renommable depuis Rime. Rime ne voit que ce qu'il a créé : il retrouve son dossier et ses fichiers même déplacés ou renommés dans Drive, et un fichier sorti du dossier reste synchronisé.
     - Le script Google Identity Services n'est chargé que si Drive sert. Son jeton d'accès dure une heure ; ensuite, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
     - Un texte modifié des deux côtés garde les deux versions : celle de Drive devient une copie « (conflit) ». Un texte supprimé dans Rime va à la corbeille Drive.
     - État dans `rime-drive` (`localStorage`) et jeton dans `rime-drive-token` (`sessionStorage`). Les textes sauvés gagnent `drive: {id, rev}` et `pending`.
+    - Versions : `<dossier>/Versions/<titre>/<AAAA-MM-JJ HHhMM — nom>.txt`, un fichier par version, qui ne change jamais. La synchro fait l'union des deux côtés, plus les suppressions, l'épingle et le nom.
+    - Marques privées : fichiers de versions `rimeVersion`, `rimeId`, `at`, `pinned`, `label` ; dossiers `rime: 'root' | 'versions'` et `rimeVersionsOf`. Un dossier perdu fait repartir ce qu'il contenait, sans rien effacer ici.
     - Projet Google Cloud de Rime : ID client OAuth dans `GOOGLE_CLIENT_ID`, avec pour origines autorisées `https://rime.menace.cloud` et `http://localhost:8080`.
 - `deploy/api/` : API Flask.
   - `app.py` : routes `POST /analyze`, `GET /query` (suggestions) et `GET /health`, limites de taille.

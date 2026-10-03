@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rime — Analyse de schémas de rimes</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 <style id="focusStyle"></style>
 </head>
 <body>
@@ -24,6 +24,7 @@
       <div id="docList"></div>
       <div class="menu-sep"></div>
       <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
+      <label class="menu-check"><input type="checkbox" id="exportHistory" checked> avec l'historique des versions</label>
       <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
       <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
       <div class="menu-label">Google Drive</div>
@@ -52,6 +53,9 @@
   </div>
   <button class="tog" id="flowBtn" aria-pressed="true" title="Afficher ou masquer la bande de flow, une case par syllabe">Flow</button>
   <button class="tog" id="vowBtn" aria-pressed="false" title="Colorer chaque syllabe de la bande par sa voyelle">Voyelles</button>
+  <button class="tog tog-icon" id="versionsBtn" aria-pressed="false">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7 M2.6 2.4v2.6h2.6 M8 5v3.2l2.1 1.3"/></svg>Versions
+  </button>
   <div class="menu-wrap">
     <button class="tog" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu">Exporter</button>
     <div class="menu menu-right" id="exportMenu" hidden>
@@ -94,6 +98,52 @@
       <div class="col col-meta" id="meta"></div>
     </div>
   </main>
+
+  <!-- Mode Versions : la comparaison prend la place de l'éditeur, la liste celle du panneau -->
+  <section class="compare" id="compare" aria-label="Comparaison des versions">
+    <div class="cmp-bar">
+      <div class="cmp-title"><strong id="cmpHeading"></strong><span id="cmpSub"></span></div>
+      <div class="spacer"></div>
+      <button class="pin-btn" id="cmpPin" aria-pressed="false" aria-label="Épingler cette version">
+        <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>
+      </button>
+      <button class="tog tog-icon solid" id="cmpRestore">
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2 M3.5 3v2.5H6"/></svg>Restaurer
+      </button>
+      <div class="cmp-ctls">
+        <div class="cmp-ctl">Comparer à
+          <div class="seg seg-sm" role="group" aria-label="Comparer à">
+            <button data-cmp="current" aria-pressed="true">Texte actuel</button>
+            <button data-cmp="prev" aria-pressed="false">Version précédente</button>
+          </div>
+        </div>
+        <div class="cmp-ctl">Affichage
+          <div class="seg seg-sm" role="group" aria-label="Affichage">
+            <button data-view="side" aria-pressed="true" title="Les deux textes face à face"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 3.5h11v9h-11Z M8 3.5v9"/></svg>Côte à côte</button>
+            <button data-view="inline" aria-pressed="false" title="Un seul texte, changements surlignés"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 4.5h11 M2.5 8h11 M2.5 11.5h7"/></svg>Fusionné</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cmp-heads" id="cmpHeads"></div>
+    <div class="cmp-rows" id="cmpRows"></div>
+  </section>
+
+  <aside class="vrail" id="versionsRail" aria-label="Versions">
+    <div class="vr-head">
+      <div class="vr-title"><h2>Versions</h2><kbd>Ctrl+Maj+H</kbd></div>
+      <p id="vStorage"></p>
+    </div>
+    <div class="vr-list" id="vList"></div>
+    <div class="vr-foot">
+      <label for="vLabel">Nom de la version sélectionnée</label>
+      <input type="text" id="vLabel" maxlength="50" placeholder="Par exemple : version studio" autocomplete="off">
+      <button class="vr-del" id="vDelete" disabled>
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M3 4.5h10 M6.5 4.5V3h3v1.5 M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg><span id="vDeleteText">Coche des versions pour les supprimer</span>
+      </button>
+      <p class="vr-note">Rien n'est supprimé sans toi. Une version épinglée est protégée : désépingle-la pour la supprimer.</p>
+    </div>
+  </aside>
 
   <aside class="rail" id="rail" aria-label="Analyse">
     <section class="rs">
@@ -149,6 +199,6 @@
 
 <div class="tip" id="tip" role="tooltip" hidden></div>
 
-<script src="script.js?v=4"></script>
+<script src="script.js?v=5"></script>
 </body>
 </html>

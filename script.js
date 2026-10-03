@@ -423,7 +423,7 @@ let stripW = 300;
 const flowShown = () => prefs.flow && prefs.mode !== 'text';
 
 function layoutStrip() {
-  if (!flowShown()) return;
+  if (!flowShown() || vstate.open) return;   // éditeur masqué : rien à mesurer, refait à la sortie
   // Place du texte et de la bande : la largeur de l'éditeur moins les colonnes fixes (gouttière, poignée, méta)
   const avail = $('textCol').offsetWidth + strip.offsetWidth;
   const max = Math.max(MIN_STRIP, Math.min(MAX_STRIP, avail - 160));
@@ -819,6 +819,8 @@ function renderDocState() {
   const state = saved ? (saved.text === ta.value ? 'Enregistré' : 'Modifié') : ta.value.trim() ? 'Non enregistré' : '';
   $('docState').textContent = state;
   $('docState').classList.toggle('dirty', state === 'Modifié' || state === 'Non enregistré');
+  $('versionsBtn').disabled = !doc.id;
+  $('versionsBtn').dataset.tip = doc.id ? 'Historique des versions (Ctrl+Maj+H)' : 'Sauve le texte pour commencer son historique';
   const title = docTitle(ta.value, true);
   $('docTitle').textContent = title || 'Sans titre';
   document.title = title ? `${title} — Rime` : 'Rime — Analyse de schémas de rimes';
@@ -839,7 +841,8 @@ function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
   // pending : à envoyer sur Drive ; une copie « (conflit) » sauvée devient un texte ordinaire
-  const { conflict, ...prev } = docs.find(d => d.id === doc.id) || { id: Date.now() };
+  const old = docs.find(d => d.id === doc.id);
+  const { conflict, ...prev } = old || { id: Date.now() };
   const item = { ...prev, text, updated: Date.now(), pending: true };
   // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
   const next = [item, ...docs.filter(d => d.id !== item.id)];
@@ -849,6 +852,7 @@ function saveDoc() {
   persistDraft();
   renderDocState();
   toast('Texte enregistré ✓');
+  addVersion(item.id, text, { before: old && { text: old.text, at: old.updated } });
   requestSync();
 }
 
@@ -865,19 +869,25 @@ function openDoc(id) {
   setText(item.text, id);
 }
 
-function deleteDoc(id) {
+// Le texte et tout son historique ; dans Drive, à la corbeille
+async function deleteDoc(id) {
   const item = docs.find(d => d.id === id);
-  if (!item || !confirm(`Supprimer « ${docTitle(item.text) || 'Sans titre'} » des textes sauvés ?`)) return;
+  if (!item) return;
+  const n = (await versionsOf(id).catch(() => [])).length;
+  const history = n > 1 ? ` et ses ${n} versions` : n ? ' et sa version' : '';
+  if (!confirm(`Supprimer « ${docTitle(item.text) || 'Sans titre'} »${history} des textes sauvés ?`)) return;
   docs = docs.filter(d => d.id !== id);
   store('rime-history', docs);
-  if (item.drive) { drive.trash.push(item.drive.id); saveDrive(); }   // à la corbeille de Drive
-  if (doc.id === id) { doc.id = null; persistDraft(); }
+  if (item.drive) { drive.trash.push(item.drive.id); saveDrive(); }
+  await dropDocVersions(id);
+  if (doc.id === id) { doc.id = null; persistDraft(); closeVersions(); }
   renderDocList();
   renderDocState();
   requestSync();
 }
 
 function setText(text, id) {
+  closeVersions();
   doc.id = id;
   ta.value = text;
   ta.setSelectionRange(0, 0);
@@ -896,30 +906,42 @@ function persistDraft() {
 }
 addEventListener('pagehide', persistDraft);
 
-// Sauvegarde de tous les textes sauvés, réimportable
-function exportAll() {
+// Sauvegarde de tous les textes sauvés, réimportable ; avec leur historique si la case est cochée
+async function exportAll() {
   if (!docs.length) { toast('Aucun texte sauvé à exporter'); return; }
   const now = new Date();
-  download(`rime-textes-${now.toISOString().slice(0, 10)}.json`,
-    JSON.stringify({ app: 'rime', version: 1, exported: now.toISOString(), texts: docs }, null, 2), 'application/json');
+  const backup = { app: 'rime', version: 2, exported: now.toISOString(), texts: docs.map(({ id, text, updated }) => ({ id, text, updated })) };
+  if ($('exportHistory').checked) {
+    const ids = new Set(docs.map(d => d.id));
+    backup.versions = (await allVersions().catch(() => []))
+      .filter(v => ids.has(v.docId))
+      .map(({ id, docId, at, text, source, label, pinned }) => ({ id, docId, at, text, source, label, pinned }));
+  }
+  download(`rime-textes-${now.toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), 'application/json');
 }
 
 // Importe des sauvegardes Rime (.json) et des paroles (.txt) dans les textes sauvés.
 // Rien n'est jamais écrasé : un texte déjà sauvé à l'identique est ignoré, un id déjà pris est remplacé.
 async function importFiles(files) {
-  const found = [], unreadable = [];
+  const found = [], foundVersions = [], unreadable = [];
+  const norm = s => s.replace(/\r\n?/g, '\n');
   for (const f of files) {
-    const raw = (await f.text()).replace(/\r\n?/g, '\n');
+    const raw = norm(await f.text());
     if (!/\.json$/i.test(f.name)) { found.push({ text: raw }); continue; }
     try {
       const data = JSON.parse(raw);
       if (data?.app !== 'rime' || !Array.isArray(data.texts)) throw new Error();
-      data.texts.forEach(t => { if (typeof t?.text === 'string') found.push({ ...t, text: t.text.replace(/\r\n?/g, '\n') }); });
+      data.texts.forEach(t => { if (typeof t?.text === 'string') found.push({ ...t, text: norm(t.text) }); });
+      // Format 2 : l'historique des versions suit ses textes
+      (Array.isArray(data.versions) ? data.versions : []).forEach(v => {
+        if (typeof v?.text === 'string' && Number.isFinite(v.at)) foundVersions.push({ ...v, text: norm(v.text) });
+      });
     } catch {
       unreadable.push(f.name);
     }
   }
   const texts = new Set(docs.map(d => d.text)), ids = new Set(docs.map(d => d.id));
+  const idMap = new Map();   // id du texte dans la sauvegarde → id ici
   let fresh = Date.now();
   const added = [];
   for (const t of found) {
@@ -928,6 +950,7 @@ async function importFiles(files) {
     let id = Number.isSafeInteger(t.id) && !ids.has(t.id) ? t.id : null;
     while (id === null || ids.has(id)) id = fresh++;
     ids.add(id);
+    if (t.id !== undefined) idMap.set(t.id, id);
     added.push({ id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now() });
   }
   const skipped = found.length - added.length;
@@ -937,8 +960,16 @@ async function importFiles(files) {
   const next = [...added, ...docs].sort((a, b) => b.updated - a.updated);
   if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
   docs = next;
+  // Historique : celui de la sauvegarde pour les textes importés, sinon une première version
+  const known = new Set((await allVersions().catch(() => [])).map(v => v.id));
+  const history = foundVersions.filter(v => idMap.has(v.docId)).map(v => ({
+    id: Number.isSafeInteger(v.id) && !known.has(v.id) ? v.id : versionId(), docId: idMap.get(v.docId), at: v.at, text: v.text,
+    source: v.source || 'import', label: String(v.label || '').slice(0, 50), pinned: !!v.pinned, stats: null, drive: null,
+  }));
+  if (history.length) await putVersions(history).catch(() => {});
+  for (const d of added) if (!history.some(v => v.docId === d.id)) await addVersion(d.id, d.text, { source: 'import' });
   renderDocState();
-  toast(`${added.length} texte${added.length > 1 ? 's' : ''} importé${added.length > 1 ? 's' : ''}${note ? ` (${note})` : ''}`);
+  toast(`${added.length} texte${added.length > 1 ? 's' : ''} importé${added.length > 1 ? 's' : ''}${history.length ? ` avec ${history.length} version${history.length > 1 ? 's' : ''}` : ''}${note ? ` (${note})` : ''}`);
   if (added.length === 1) openDoc(added[0].id);
   requestSync();
 }
@@ -948,6 +979,455 @@ $('importInput').addEventListener('change', async e => {
   e.target.value = '';
 });
 
+// ── Versions : une copie complète du texte à chaque « Sauver », dans IndexedDB ──
+// { id, docId, at, text, source: save|drive|import, label, pinned, stats: { added, removed }, drive: { id } | null, meta }
+// meta : épingle ou nom changés ici, à reporter sur Drive. Rien n'est supprimé automatiquement.
+let versionsDb = null, lastVersionId = 0, persistAsked = false;
+
+function openVersionsDb() {
+  return versionsDb ||= new Promise((resolve, reject) => {
+    const req = indexedDB.open('rime', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('versions', { keyPath: 'id' }).createIndex('docId', 'docId');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { versionsDb = null; reject(req.error); };
+  });
+}
+
+// Une transaction ; résout avec le résultat de la requête rendue par fn, une fois tout écrit
+async function versionsTx(mode, fn) {
+  const db = await openVersionsDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('versions', mode);
+    const req = fn(tx.objectStore('versions'));
+    tx.oncomplete = () => resolve(req?.result);
+    tx.onerror = tx.onabort = () => reject(tx.error);
+  });
+}
+
+const versionsOf = docId => versionsTx('readonly', s => s.index('docId').getAll(docId)).then(vs => vs.sort((a, b) => b.at - a.at));
+const allVersions = () => versionsTx('readonly', s => s.getAll());
+const putVersions = vs => versionsTx('readwrite', s => { vs.forEach(v => s.put(v)); });
+const dropVersions = ids => versionsTx('readwrite', s => { ids.forEach(id => s.delete(id)); });
+
+// Ids uniques d'un appareil à l'autre : l'heure en µs environ, plus un tirage
+function versionId() {
+  lastVersionId = Math.max(Date.now() * 1000 + Math.floor(Math.random() * 1000), lastVersionId + 1);
+  return lastVersionId;
+}
+
+const lines = text => text ? text.split('\n') : [];
+
+function lineStats(before, after) {
+  const ops = lcsOps(lines(before), lines(after));
+  return { added: ops.filter(o => o[0] === '+').length, removed: ops.filter(o => o[0] === '-').length };
+}
+
+const newVersion = (docId, text, before, source, at = Date.now()) =>
+  ({ id: versionId(), docId, at, text, source, label: '', pinned: false, stats: lineStats(before, text), drive: null });
+
+// Garde une version si le texte a changé depuis la dernière. before : le texte sauvé juste avant,
+// pour un texte qui n'a pas encore d'historique (sauvé avant que les versions existent)
+async function addVersion(docId, text, { source = 'save', at, before } = {}) {
+  try {
+    const vs = await versionsOf(docId);
+    const fresh = [];
+    if (!vs.length && before && before.text !== text) fresh.push(newVersion(docId, before.text, '', 'save', before.at));
+    const last = fresh[0]?.text ?? vs[0]?.text;
+    if (last === text) return;
+    fresh.push(newVersion(docId, text, last ?? '', source, at));
+    await putVersions(fresh);
+    if (!persistAsked) { persistAsked = true; navigator.storage?.persist?.().catch(() => {}); }
+    if (vstate.open && docId === doc.id) loadVersions();
+    requestSync();
+  } catch {
+    toast('Historique des versions indisponible dans ce navigateur');
+  }
+}
+
+// Supprime l'historique d'un texte, ici et (dossier de ses versions) dans Drive
+async function dropDocVersions(docId) {
+  const vs = await versionsOf(docId).catch(() => []);
+  if (vs.length) await dropVersions(vs.map(v => v.id)).catch(() => {});
+  if (drive.vfolders[docId]) drive.trash.push(drive.vfolders[docId]);
+  else vs.forEach(v => { if (v.drive) drive.trash.push(v.drive.id); });
+  delete drive.vfolders[docId];
+  saveDrive();
+}
+
+// ── Diff : lignes (plus longue sous-suite commune), puis mots dans les lignes modifiées ──
+function lcsOps(a, b) {
+  // Début et fin communs écartés d'abord : seule la partie modifiée passe par la table
+  let p = 0, s = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const x = a.slice(p, a.length - s), y = b.slice(p, b.length - s), n = x.length, m = y.length;
+  const ops = a.slice(0, p).map(t => ['=', t]);
+  if (n * m > 4e6) {   // texte piégé : tout retiré puis tout ajouté, sans table géante
+    x.forEach(t => ops.push(['-', t]));
+    y.forEach(t => ops.push(['+', t]));
+  } else {
+    const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (x[i] === y[j]) { ops.push(['=', x[i]]); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) ops.push(['-', x[i++]]);
+      else ops.push(['+', y[j++]]);
+    }
+    while (i < n) ops.push(['-', x[i++]]);
+    while (j < m) ops.push(['+', y[j++]]);
+  }
+  return ops.concat(a.slice(a.length - s).map(t => ['=', t]));
+}
+
+// Mots d'une ligne modifiée, espaces compris : [{ k: '=' | '-' | '+', t }]
+function wordOps(a, b) {
+  const segs = [];
+  for (const [k, t] of lcsOps(a.split(/(\s+)/).filter(Boolean), b.split(/(\s+)/).filter(Boolean))) {
+    const last = segs[segs.length - 1];
+    if (last?.k === k) last.t += t;
+    else segs.push({ k, t });
+  }
+  return segs;
+}
+
+// Chaque rangée porte ses deux rendus : côte à côte (left, right) et fusionné (segs)
+function diffRows(oldLines, newLines) {
+  const ops = lcsOps(oldLines, newLines), rows = [];
+  let k = 0, ln = 0, rn = 0;
+  while (k < ops.length) {
+    if (ops[k][0] === '=') {
+      const seg = [{ k: '=', t: ops[k][1] }];
+      rows.push({ kind: 'same', ln: ++ln, rn: ++rn, left: seg, right: seg, segs: seg });
+      k++;
+      continue;
+    }
+    const dels = [], adds = [];
+    while (k < ops.length && ops[k][0] !== '=') { (ops[k][0] === '-' ? dels : adds).push(ops[k][1]); k++; }
+    for (let x = 0; x < Math.max(dels.length, adds.length); x++) {
+      if (x < dels.length && x < adds.length) {
+        const w = wordOps(dels[x], adds[x]);
+        rows.push({ kind: 'mod', ln: ++ln, rn: ++rn, left: w.filter(s => s.k !== '+'), right: w.filter(s => s.k !== '-'), segs: w });
+      } else if (x < dels.length) {
+        const seg = [{ k: '-', t: dels[x] }];
+        rows.push({ kind: 'del', ln: ++ln, rn: '', left: seg, right: [], segs: seg });
+      } else {
+        const seg = [{ k: '+', t: adds[x] }];
+        rows.push({ kind: 'add', ln: '', rn: ++rn, left: [], right: seg, segs: seg });
+      }
+    }
+  }
+  return rows;
+}
+
+// Les lignes identiques à plus d'une ligne d'un changement sont repliées (sauf celles dépliées d'un clic)
+function foldRows(rows, unfolded) {
+  const near = rows.map((r, i) => rows.slice(Math.max(0, i - 1), i + 2).some(x => x.kind !== 'same'));
+  const out = [];
+  for (let i = 0; i < rows.length;) {
+    let j = i;
+    while (j < rows.length && !near[j]) j++;
+    if (j - i >= 2 && !unfolded.has(i)) { out.push({ kind: 'fold', from: i, n: j - i }); i = j; }
+    else if (j > i) { out.push(...rows.slice(i, j)); i = j; }
+    else out.push(rows[i++]);
+  }
+  return out;
+}
+
+const segHtml = segs => segs.map(s => s.k === '-' ? `<del>${escHtml(s.t)}</del>` : s.k === '+' ? `<ins>${escHtml(s.t)}</ins>` : escHtml(s.t)).join('');
+
+// Schéma de rimes d'un texte, par strophe : analysé à la demande, gardé en mémoire
+const schemeCache = new Map();
+
+async function schemeHtml(text) {
+  if (schemeCache.has(text)) return schemeCache.get(text);
+  let data = lastResult?.sent.join('\n') === text ? { info: lastResult.info, groups: lastResult.groups } : null;
+  if (!data) {
+    const raw = await fetchAnalysis(text.split('\n')).catch(() => null);
+    if (!raw?.lines) return '';
+    data = { info: raw.lines, groups: Object.fromEntries(raw.groups.map(g => [g.key, g])) };
+  }
+  const html = data.info.map((l, i) => {
+    const g = data.groups[l.group];
+    const gap = i && l.stanza !== data.info[i - 1].stanza ? '<span class="gap"></span>' : '';
+    return gap + (g ? `<span class="${kc(g.ci)}">${escHtml(chipLabel(l, data.groups))}</span>` : '<span>·</span>');
+  }).join('');
+  if (schemeCache.size > 50) schemeCache.clear();
+  schemeCache.set(text, html);
+  return html;
+}
+
+// ── Mode Versions : la liste dans le panneau, la comparaison à la place de l'éditeur ──
+const vstate = { open: false, list: [], sel: null, cmp: 'current', checked: new Set(), unfolded: new Set() };
+prefs.vview ??= wide ? 'side' : 'inline';
+
+// Formateurs créés une fois : la liste peut compter des centaines de versions
+const FMT = {
+  time: new Intl.DateTimeFormat('fr', { hour: '2-digit', minute: '2-digit' }),
+  short: new Intl.DateTimeFormat('fr', { day: 'numeric', month: 'short' }),
+  day: new Intl.DateTimeFormat('fr', { day: 'numeric', month: 'long' }),
+  year: new Intl.DateTimeFormat('fr', { day: 'numeric', month: 'long', year: 'numeric' }),
+};
+const hhmm = t => FMT.time.format(t);
+const shortDate = t => FMT.short.format(t);
+
+function dayLabel(t) {
+  const d = new Date(t), today = new Date(), yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Aujourd\'hui';
+  if (d.toDateString() === yesterday.toDateString()) return 'Hier';
+  return (d.getFullYear() === today.getFullYear() ? FMT.day : FMT.year).format(d);
+}
+
+// Taille en UTF-8 sans encoder le texte
+function utf8Bytes(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c < 0xdc00 ? (i++, 4) : 3;
+  }
+  return n;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} o`;
+  const [v, u] = n < 1048576 ? [n / 1024, 'Ko'] : [n / 1048576, 'Mo'];
+  return `${v.toFixed(1).replace('.', ',')} ${u}`;
+}
+
+const versionName = v => `${v.label ? `« ${v.label} » · ` : ''}Version du ${shortDate(v.at)} à ${hhmm(v.at)}`;
+
+async function openVersions() {
+  if (!doc.id) { toast('Sauve le texte pour commencer son historique'); return; }
+  closeMenus();
+  hideTip();
+  if (lockedPh) setLock(null);
+  Object.assign(vstate, { open: true, sel: null, cmp: 'current' });
+  vstate.checked.clear();
+  vstate.unfolded.clear();
+  document.querySelector('.body').classList.add('versions');
+  $('versionsBtn').setAttribute('aria-pressed', 'true');
+  // Texte sauvé avant que les versions existent : il devient la première
+  const saved = docs.find(d => d.id === doc.id);
+  if (saved && !(await versionsOf(doc.id).catch(() => [])).length) await addVersion(doc.id, saved.text, { at: saved.updated });
+  await loadVersions();
+}
+
+function closeVersions() {
+  if (!vstate.open) return;
+  vstate.open = false;
+  document.querySelector('.body').classList.remove('versions');
+  $('versionsBtn').setAttribute('aria-pressed', 'false');
+  layoutStrip();
+  ta.focus({ preventScroll: true });
+}
+
+const toggleVersions = () => vstate.open ? closeVersions() : openVersions();
+
+async function loadVersions() {
+  if (!vstate.open) return;
+  const list = await versionsOf(doc.id).catch(() => []);
+  // Versions venues de Drive : leurs « +n −n » se calculent ici, une fois
+  const fixed = list.filter((v, i) => !v.stats && (v.stats = lineStats(list[i + 1]?.text ?? '', v.text)));
+  if (fixed.length) putVersions(fixed).catch(() => {});
+  vstate.list = list;
+  vstate.bytes = list.reduce((a, v) => a + utf8Bytes(v.text), 0);
+  if (!list.some(v => v.id === vstate.sel)) {
+    // Par défaut : la plus récente qui diffère du texte de l'éditeur, pour voir le dernier changement
+    vstate.sel = (list.find(v => v.text !== ta.value) || list[0])?.id ?? null;
+    vstate.unfolded.clear();
+  }
+  [...vstate.checked].forEach(id => { if (!list.some(v => v.id === id && !v.pinned)) vstate.checked.delete(id); });
+  renderVersions();
+}
+
+function renderVersions() {
+  renderVersionList();
+  renderCompare();
+}
+
+const CLOUD_OK = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M6.3 9.4l1.3 1.3 2.3-2.4';
+const CLOUD_UP = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 11V7.6 M6.6 9 8 7.6 9.4 9';
+const STAR = '<svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>';
+
+function renderVersionList() {
+  const { list, sel, checked } = vstate;
+  const saved = docs.find(d => d.id === doc.id)?.text;
+  const inDrive = list.filter(v => v.drive).length;
+  $('vStorage').textContent = `${list.length} version${list.length > 1 ? 's' : ''} · ${formatBytes(vstate.bytes)}`
+    + (drive.on ? ` · ${inDrive} sur ${list.length} dans Google Drive` : '');
+  let day = '';
+  $('vList').innerHTML = list.map(v => {
+    const label = dayLabel(v.at);
+    const head = label !== day ? `<div class="vr-day">${escHtml(day = label)}</div>` : '';
+    const drv = drive.on
+      ? `<span class="vi-drive" data-tip="${v.drive ? 'Sauvegardée dans Google Drive' : 'À envoyer vers Google Drive'}"><svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="${v.drive ? CLOUD_OK : CLOUD_UP}"/></svg></span>` : '';
+    return `${head}<div class="vitem${v.id === sel ? ' on' : ''}">
+      <input type="checkbox" data-check="${v.id}" aria-label="Sélectionner la version de ${hhmm(v.at)}"${v.pinned ? ' disabled data-tip="Version épinglée : protégée"' : ''}${checked.has(v.id) ? ' checked' : ''}>
+      <button class="vi-main" data-pick="${v.id}" aria-current="${v.id === sel}">
+        <span class="vi-time">${hhmm(v.at)}${v.text === saved ? '<span class="vi-cur">actuelle</span>' : ''}</span>
+        <span class="vi-meta"><span class="add">+${v.stats?.added ?? 0}</span><span class="del">−${v.stats?.removed ?? 0}</span>${v.label ? `<span>· ${escHtml(v.label)}</span>` : ''}</span>
+      </button>${drv}
+      <button class="vi-pin" data-pin="${v.id}" aria-pressed="${v.pinned}" aria-label="${v.pinned ? 'Désépingler' : 'Épingler (protège de la suppression)'}">${STAR}</button>
+    </div>`;
+  }).join('') || '<p class="empty-note">Aucune version pour l\'instant : chaque « Sauver » en créera une.</p>';
+  renderVersionFoot();
+}
+
+function renderVersionFoot() {
+  const n = vstate.checked.size;
+  $('vDelete').disabled = !n;
+  $('vDeleteText').textContent = n ? `Supprimer ${n} version${n > 1 ? 's' : ''}` : 'Coche des versions pour les supprimer';
+  const v = vstate.list.find(x => x.id === vstate.sel);
+  $('vLabel').disabled = !v;
+  if (document.activeElement !== $('vLabel')) $('vLabel').value = v?.label || '';
+}
+
+// Choisir une version ne change pas la liste : seule la sélection bouge
+function selectVersion(id) {
+  vstate.sel = id;
+  vstate.unfolded.clear();
+  $('vList').querySelectorAll('[data-pick]').forEach(b => {
+    const on = +b.dataset.pick === id;
+    b.setAttribute('aria-current', on);
+    b.parentElement.classList.toggle('on', on);
+  });
+  renderVersionFoot();
+  renderCompare();
+}
+
+function renderCompare() {
+  const { list, cmp } = vstate;
+  const v = list.find(x => x.id === vstate.sel);
+  document.querySelectorAll('[data-cmp]').forEach(b => b.setAttribute('aria-pressed', b.dataset.cmp === cmp));
+  document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === prefs.vview));
+  $('cmpPin').hidden = $('cmpRestore').hidden = !v;
+  if (!v) {
+    $('cmpHeading').textContent = 'Versions';
+    $('cmpSub').textContent = '';
+    $('cmpHeads').innerHTML = '';
+    $('cmpRows').innerHTML = '<p class="cmp-empty">Aucune version à comparer.</p>';
+    return;
+  }
+  const prev = list[list.indexOf(v) + 1];
+  const dirty = isDirty();
+  const [oldText, newText] = cmp === 'prev' ? [prev?.text ?? '', v.text] : [v.text, ta.value];
+  const rows = diffRows(lines(oldText), lines(newText));
+  const same = rows.every(r => r.kind === 'same');
+  const added = rows.filter(r => r.kind === 'add' || r.kind === 'mod').length;
+  const removed = rows.filter(r => r.kind === 'del' || r.kind === 'mod').length;
+  $('cmpHeading').textContent = versionName(v);
+  $('cmpSub').textContent = same
+    ? (cmp === 'prev' ? (prev ? 'Identique à la version précédente' : 'Première version') : 'Identique au texte actuel')
+    : `${cmp === 'prev' ? (prev ? `Changements depuis la version de ${hhmm(prev.at)}` : 'Première version') : 'Ce qui a changé depuis, jusqu\'au texte actuel'} · +${added} −${removed} ligne${added + removed > 1 ? 's' : ''}`;
+  $('cmpPin').setAttribute('aria-pressed', v.pinned);
+  $('cmpPin').dataset.tip = v.pinned ? 'Épinglée : protégée de la suppression. Clic pour désépingler.' : 'Épingler : protège de la suppression';
+  $('cmpRestore').disabled = v.text === ta.value;
+  $('cmpRestore').dataset.tip = v.text === ta.value ? 'C\'est déjà le texte de l\'éditeur' : 'Remettre cette version dans l\'éditeur (Ctrl+Z pour annuler)';
+
+  const oldName = cmp === 'prev' ? (prev ? versionName(prev) : 'Rien avant') : versionName(v);
+  const newName = cmp === 'prev' ? versionName(v) : `Texte actuel${dirty ? ' (non sauvé)' : ''}`;
+  $('cmpHeads').innerHTML = prefs.vview === 'side'
+    ? `<div class="cmp-head old"><span>${escHtml(oldName)}</span><span class="cmp-scheme" data-scheme="old"></span></div>`
+      + `<div class="cmp-head new"><span>${escHtml(newName)}</span><span class="cmp-scheme" data-scheme="new"></span></div>`
+    : `<div class="cmp-head both">Schéma<span class="cmp-scheme" data-scheme="old"></span><span class="cmp-arrow">→</span><span class="cmp-scheme" data-scheme="new"></span></div>`;
+  fillScheme('old', oldText);
+  fillScheme('new', newText);
+
+  const shown = same ? rows : foldRows(rows, vstate.unfolded);
+  $('cmpRows').innerHTML = shown.map(r => {
+    if (r.kind === 'fold') return `<button class="dfold" data-unfold="${r.from}">⋯  ${r.n} lignes identiques</button>`;
+    if (prefs.vview === 'side') {
+      return `<div class="dr ${r.kind}"><div class="dc l"><span class="dn">${r.ln}</span><span class="dt">${segHtml(r.left)}</span></div>`
+        + `<div class="dc r"><span class="dn">${r.rn}</span><span class="dt">${segHtml(r.right)}</span></div></div>`;
+    }
+    const mark = { same: '', mod: '~', add: '+', del: '−' }[r.kind];
+    return `<div class="di ${r.kind}"><span class="dn">${r.rn}</span><span class="dm">${mark}</span><span class="dt">${segHtml(r.segs)}</span></div>`;
+  }).join('') || '<p class="cmp-empty">Texte vide.</p>';
+}
+
+function fillScheme(side, text) {
+  const el = document.querySelector(`[data-scheme="${side}"]`);
+  if (!el) return;
+  el.dataset.text = text;
+  el.innerHTML = '<span>…</span>';
+  if (!text.trim()) { el.innerHTML = ''; return; }
+  schemeHtml(text).then(html => { if (el.isConnected && el.dataset.text === text) el.innerHTML = html; });
+}
+
+async function updateVersion(id, change) {
+  const v = vstate.list.find(x => x.id === id);
+  if (!v) return;
+  Object.assign(v, change, { meta: true });
+  if (v.pinned) vstate.checked.delete(id);
+  await putVersions([v]).catch(() => toast('Historique des versions indisponible dans ce navigateur'));
+  renderVersions();
+  requestSync();
+}
+
+async function deleteCheckedVersions() {
+  const ids = [...vstate.checked].filter(id => vstate.list.some(v => v.id === id && !v.pinned));
+  if (!ids.length) return;
+  if (!confirm(`Supprimer ${ids.length} version${ids.length > 1 ? 's' : ''} ?${drive.on ? ' Elles partiront aussi à la corbeille de Google Drive.' : ''}`)) return;
+  vstate.list.filter(v => ids.includes(v.id) && v.drive).forEach(v => drive.trash.push(v.drive.id));
+  saveDrive();
+  await dropVersions(ids).catch(() => {});
+  vstate.checked.clear();
+  await loadVersions();
+  requestSync();
+}
+
+// Restaurer : le texte revient dans l'éditeur par la pile d'annulation, Ctrl+Z l'enlève
+function restoreVersion(id) {
+  const v = vstate.list.find(x => x.id === id);
+  if (!v) return;
+  closeVersions();
+  ta.select();
+  insertText(v.text);
+  ta.setSelectionRange(0, 0);
+  toast(`Version de ${hhmm(v.at)} restaurée · Ctrl+Z pour annuler`);
+}
+
+$('versionsBtn').addEventListener('click', toggleVersions);
+$('vList').addEventListener('click', e => {
+  const pick = e.target.closest('[data-pick]'), pin = e.target.closest('[data-pin]');
+  if (pick) selectVersion(+pick.dataset.pick);
+  else if (pin) {
+    const v = vstate.list.find(x => x.id === +pin.dataset.pin);
+    if (v) updateVersion(v.id, { pinned: !v.pinned });
+  }
+});
+$('vList').addEventListener('change', e => {
+  const id = +e.target.dataset.check;
+  if (!id) return;
+  e.target.checked ? vstate.checked.add(id) : vstate.checked.delete(id);
+  renderVersionFoot();
+});
+$('vLabel').addEventListener('change', e => { if (vstate.sel) updateVersion(vstate.sel, { label: e.target.value.trim().slice(0, 50) }); });
+$('vLabel').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+$('vDelete').addEventListener('click', deleteCheckedVersions);
+$('cmpPin').addEventListener('click', () => {
+  const v = vstate.list.find(x => x.id === vstate.sel);
+  if (v) updateVersion(v.id, { pinned: !v.pinned });
+});
+$('cmpRestore').addEventListener('click', () => restoreVersion(vstate.sel));
+document.querySelectorAll('[data-cmp]').forEach(b => b.addEventListener('click', () => {
+  vstate.cmp = b.dataset.cmp;
+  vstate.unfolded.clear();
+  renderCompare();
+}));
+document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => {
+  prefs.vview = b.dataset.view;
+  savePrefs();
+  renderCompare();
+}));
+$('cmpRows').addEventListener('click', e => {
+  const f = e.target.closest('[data-unfold]');
+  if (!f) return;
+  vstate.unfolded.add(+f.dataset.unfold);
+  renderCompare();
+});
+
 // ── Google Drive : un .txt par texte sauvé, dans un dossier « Rime » ──
 // Accès limité aux fichiers créés par Rime (drive.file). Sans serveur, Google ne donne qu'un jeton
 // d'une heure : passé ce délai, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
@@ -955,8 +1435,9 @@ const GOOGLE_CLIENT_ID = '380243851119-hod3g0vlnqsgnkquhglen3ppsqi015or.apps.goo
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 // on : synchro activée ; folder, folderName : le dossier des textes (choisi par l'utilisateur, « Rime » par défaut) ;
-// wantedName : nom demandé, appliqué à la prochaine synchro ; trash : fichiers de textes supprimés, à mettre à la corbeille
-const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], ...stored('rime-drive', {}) };
+// wantedName : nom demandé, appliqué à la prochaine synchro ; trash : fichiers ou dossiers supprimés ici, à mettre à la corbeille ;
+// vroot : le dossier « Versions » ; vfolders : { id du texte : dossier de ses versions }
+const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], vroot: null, vfolders: {}, ...stored('rime-drive', {}) };
 const FOLDER_TYPE = 'application/vnd.google-apps.folder';
 const saveDrive = () => store('rime-drive', drive);
 let driveToken = (() => {
@@ -1015,12 +1496,19 @@ function disconnectDrive() {
   if (!confirm('Arrêter la synchro avec Google Drive ? Tes textes restent dans ton Drive et dans ce navigateur.')) return;
   if (driveToken) window.google?.accounts?.oauth2?.revoke(driveToken.value, () => {});
   dropDriveToken();
-  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [] });
+  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [], vroot: null, vfolders: {} });
   saveDrive();
-  // Plus de lien : à la reconnexion, les fichiers sont retrouvés par l'id du texte qu'ils portent
+  // Plus de lien : à la reconnexion, les fichiers sont retrouvés par l'id du texte ou de la version qu'ils portent
   docs.forEach(d => { delete d.drive; });
   store('rime-history', docs);
+  resetVersionLinks();
   renderDrive();
+}
+
+async function resetVersionLinks() {
+  const linked = (await allVersions().catch(() => [])).filter(v => v.drive);
+  linked.forEach(v => { v.drive = null; });
+  if (linked.length) await putVersions(linked).catch(() => {});
 }
 
 function dropDriveToken() {
@@ -1055,15 +1543,18 @@ async function driveApi(path, { method = 'GET', json, upload, raw = false } = {}
 // Le dossier des textes : celui de la dernière synchro, sinon celui que Rime a déjà créé, sinon un nouveau.
 // Rime ne voit que les dossiers qu'il a créés : il retrouve le sien même déplacé ou renommé dans Drive.
 async function driveFolder() {
-  let f = drive.folder && await driveApi(`files/${drive.folder}?fields=id,name,trashed`);
+  let f = drive.folder && await driveApi(`files/${drive.folder}?fields=id,name,trashed,appProperties`);
   if (!f || f.trashed) {
     // Dossier perdu (supprimé, autre compte) : les anciens liens ne valent plus, rien n'est effacé ici
     docs.forEach(d => { delete d.drive; });
-    drive.trash = [];
-    const q = encodeURIComponent(`mimeType = '${FOLDER_TYPE}' and trashed = false`);
-    f = (await driveApi(`files?q=${q}&orderBy=createdTime&fields=files(id,name)`))?.files?.[0]
-      ?? await driveApi('files?fields=id,name', { method: 'POST', json: { name: drive.wantedName || 'Rime', mimeType: FOLDER_TYPE } });
+    Object.assign(drive, { trash: [], vroot: null, vfolders: {} });
+    await resetVersionLinks();
+    // Le dossier principal porte la marque « root » ; un dossier d'avant les marques est le plus ancien sans marque
+    const folders = await driveFolders();
+    f = folders.find(x => x.appProperties?.rime === 'root') ?? folders.find(x => !x.appProperties?.rime && !x.appProperties?.rimeVersionsOf)
+      ?? await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: drive.wantedName || 'Rime', mimeType: FOLDER_TYPE, appProperties: { rime: 'root' } } });
   }
+  if (f.appProperties?.rime !== 'root') await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { appProperties: { rime: 'root' } } });
   if (drive.wantedName && f.name !== drive.wantedName) {
     f = await driveApi(`files/${f.id}?fields=id,name`, { method: 'PATCH', json: { name: drive.wantedName } }) ?? f;
   }
@@ -1072,13 +1563,20 @@ async function driveFolder() {
   return f.id;
 }
 
-// Tous les fichiers de textes de Rime, où qu'ils soient : sorti du dossier dans Drive, un texte reste synchronisé
+// Les dossiers créés par Rime, du plus ancien au plus récent : Rime ne voit pas les autres
+async function driveFolders() {
+  const q = encodeURIComponent(`mimeType = '${FOLDER_TYPE}' and trashed = false`);
+  return (await driveApi(`files?q=${q}&orderBy=createdTime&pageSize=1000&fields=files(id,name,appProperties)`))?.files || [];
+}
+
+// Tous les fichiers de Rime, où qu'ils soient : sorti du dossier dans Drive, un texte reste synchronisé.
+// Textes (rimeId) et versions (rimeVersion) arrivent ensemble.
 async function driveList() {
   const q = encodeURIComponent("mimeType = 'text/plain' and trashed = false");
   const files = [];
   let page = '';
   do {
-    const r = await driveApi(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,version,modifiedTime,appProperties)${page ? `&pageToken=${page}` : ''}`);
+    const r = await driveApi(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,version,modifiedTime,appProperties)${page ? `&pageToken=${page}` : ''}`);
     files.push(...(r?.files || []));
     page = r?.nextPageToken || '';
   } while (page);
@@ -1129,7 +1627,8 @@ async function runDriveSync() {
     drive.trash = drive.trash.filter(x => x !== id);
     saveDrive();
   }
-  const remote = await driveList();
+  const files = await driveList();
+  const remote = files.filter(f => !f.appProperties.rimeVersion);
   const byId = new Map(remote.map(f => [f.id, f]));
   const byRime = new Map(remote.map(f => [f.appProperties?.rimeId, f]));
   const seen = new Set();
@@ -1139,10 +1638,11 @@ async function runDriveSync() {
     if (!d) continue;
     const f = (d.drive && byId.get(d.drive.id)) || byRime.get(String(id));
     if (!f) {
-      // Fichier supprimé dans Drive : le texte suit, sauf s'il a des modifications à envoyer
+      // Fichier supprimé dans Drive : le texte suit, avec son historique, sauf s'il a des modifications à envoyer
       if (d.drive && !d.pending) {
         docs = docs.filter(x => x !== d);
-        if (doc.id === id) { doc.id = null; persistDraft(); }
+        if (doc.id === id) { doc.id = null; persistDraft(); closeVersions(); }
+        await dropDocVersions(id);
         continue;
       }
       delete d.drive;
@@ -1163,6 +1663,10 @@ async function runDriveSync() {
       d.pending = false;
       continue;
     }
+    // Avant tout remplacement, la version d'ici est gardée dans l'historique
+    await addVersion(id, d.text, { source: 'drive', at: d.updated });
+    d = docs.find(x => x.id === id);
+    if (!d) continue;
     const editing = d.id === doc.id && isDirty();
     if (!d.pending && !editing) {
       Object.assign(d, { text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
@@ -1175,7 +1679,8 @@ async function runDriveSync() {
     if (!d.pending) continue;   // modifications non sauvées dans l'éditeur : on attend « Sauver »
     // Modifié des deux côtés : la version de Drive devient une copie « (conflit) », la nôtre part sur le fichier
     d.drive = { id: f.id, rev: f.version };
-    addDoc({ text, updated: remoteTime(f), conflict: true, pending: true });
+    const copy = addDoc({ text, updated: remoteTime(f), conflict: true, pending: true });
+    await addVersion(copy.id, text, { source: 'drive', at: copy.updated });
     await drivePush(d, folder);
   }
   // 3. Les fichiers inconnus ici : textes sauvés depuis un autre appareil
@@ -1187,6 +1692,110 @@ async function runDriveSync() {
   }
   // 4. Les copies « (conflit) » créées plus haut
   for (const d of docs.filter(x => !x.drive)) await drivePush(d, folder);
+  // 5. L'historique de chaque texte
+  await syncVersions(folder, files.filter(f => f.appProperties.rimeVersion));
+}
+
+// ── Versions dans Drive : <dossier>/Versions/<titre>/<date heure — nom>.txt, une version = un fichier ──
+// Une version ne change jamais : la synchro fait l'union des deux côtés, plus les suppressions, l'épingle et le nom.
+const pad = n => String(n).padStart(2, '0');
+const versionFile = v => {
+  const d = new Date(v.at);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}h${pad(d.getMinutes())}${v.label ? ` — ${v.label}` : ''}.txt`;
+};
+// appProperties : clé + valeur ≤ 124 octets ; le nom est coupé en octets (accents, emojis)
+function clipBytes(s, max) {
+  const enc = new TextEncoder();
+  let out = '';
+  for (const ch of s) {
+    if (enc.encode(out + ch).length > max) break;
+    out += ch;
+  }
+  return out;
+}
+const versionProps = v => ({ rimeVersion: String(v.id), rimeId: String(v.docId), at: String(v.at), source: v.source, pinned: v.pinned ? '1' : '0', label: clipBytes(v.label, 110) });
+
+async function syncVersions(root, remote) {
+  const folders = await driveFolders();
+  const valid = new Set(folders.map(f => f.id));
+  if (!valid.has(drive.vroot)) drive.vroot = null;
+  // Un dossier de versions supprimé dans Drive : ses versions repartent, rien n'est effacé ici
+  const lost = new Set(Object.keys(drive.vfolders).filter(docId => !valid.has(drive.vfolders[docId])).map(Number));
+  lost.forEach(docId => { delete drive.vfolders[docId]; });
+  const local = await allVersions();
+  const known = new Set(local.map(v => v.id));
+  const byVersion = new Map(remote.map(f => [Number(f.appProperties.rimeVersion), f]));
+  const put = [], drop = [];
+
+  // Le dossier des versions d'un texte, créé au besoin (et renommé comme le texte)
+  const folderOf = async docId => {
+    const title = (docTitle(docs.find(d => d.id === docId)?.text || '') || 'Sans titre').slice(0, 80);
+    let f = folders.find(x => x.id === drive.vfolders[docId]) ?? folders.find(x => x.appProperties?.rimeVersionsOf === String(docId));
+    if (!f) {
+      drive.vroot ??= folders.find(x => x.appProperties?.rime === 'versions')?.id
+        ?? (await driveApi('files?fields=id', { method: 'POST', json: { name: 'Versions', mimeType: FOLDER_TYPE, parents: [root], appProperties: { rime: 'versions' } } })).id;
+      f = await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: title, mimeType: FOLDER_TYPE, parents: [drive.vroot], appProperties: { rimeVersionsOf: String(docId) } } });
+      folders.push(f);
+    } else if (f.name !== title) {
+      await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: title } });
+      f.name = title;
+    }
+    drive.vfolders[docId] = f.id;
+    return f.id;
+  };
+  const upload = async v => {
+    const f = await driveApi('files?uploadType=multipart&fields=id', {
+      method: 'POST',
+      upload: { meta: { name: versionFile(v), mimeType: 'text/plain', parents: [await folderOf(v.docId)], appProperties: versionProps(v) }, text: v.text },
+    });
+    v.drive = { id: f.id };
+  };
+
+  // 1. Les versions d'ici face à leurs fichiers
+  for (const v of local) {
+    if (!docs.some(d => d.id === v.docId)) continue;
+    const f = byVersion.get(v.id);
+    if (!f) {
+      // Fichier supprimé dans Drive : la version suit, sauf si elle est épinglée (elle repart) ou si son dossier a disparu
+      if (v.drive && !v.pinned && !lost.has(v.docId)) { drop.push(v.id); continue; }
+      v.drive = null;
+      v.meta = false;
+      await upload(v);
+      put.push(v);
+      continue;
+    }
+    const relinked = v.drive?.id !== f.id;
+    v.drive = { id: f.id };
+    if (v.meta) {
+      // Épingle ou nom changés ici : reportés sur le fichier (nom compris)
+      const ok = await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: versionFile(v), appProperties: versionProps(v) } });
+      if (!ok) { v.drive = null; await upload(v); }
+      v.meta = false;
+      put.push(v);
+    } else if ((f.appProperties.pinned === '1') !== v.pinned || (f.appProperties.label || '') !== v.label) {
+      // Changés sur un autre appareil
+      v.pinned = f.appProperties.pinned === '1';
+      v.label = f.appProperties.label || '';
+      put.push(v);
+    } else if (relinked) put.push(v);
+  }
+  // 2. Les versions venues d'un autre appareil
+  for (const f of remote) {
+    const id = Number(f.appProperties.rimeVersion), docId = Number(f.appProperties.rimeId);
+    if (known.has(id) || drive.trash.includes(f.id) || !docs.some(d => d.id === docId)) continue;
+    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+    put.push({
+      id, docId, at: Number(f.appProperties.at) || remoteTime(f), text, source: f.appProperties.source || 'save',
+      label: f.appProperties.label || '', pinned: f.appProperties.pinned === '1', stats: null, drive: { id: f.id },
+    });
+  }
+  // Pendant la synchro, une version a pu être épinglée, renommée ou supprimée ici : ces gestes l'emportent
+  const now = new Map((await allVersions()).map(v => [v.id, v]));
+  const keep = put.filter(v => now.has(v.id) || !known.has(v.id)).map(v => now.get(v.id)?.meta ? { ...now.get(v.id), drive: v.drive } : v);
+  if (keep.length) await putVersions(keep);
+  if (drop.length) await dropVersions(drop);
+  saveDrive();
+  if (vstate.open && (keep.length || drop.length)) loadVersions();
 }
 
 // Une seule synchro à la fois ; une demande pendant la synchro en relance une derrière
@@ -1526,11 +2135,15 @@ document.addEventListener('click', e => {
 });
 
 document.addEventListener('keydown', e => {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveDoc(); }
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); toggleVersions(); }
+  else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveDoc(); }
   else if (e.key === 'Escape') {
+    const menuOpen = document.querySelector('.menu:not([hidden])');
     closeMenus();
     hideTip();
     if (lockedPh) setLock(null);
+    else if (!menuOpen && document.activeElement !== $('vLabel')) closeVersions();
   }
 });
 
