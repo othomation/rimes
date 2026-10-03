@@ -4,7 +4,11 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
 
 ## Architecture
 
-- `index.html`, `style.css`, `script.js` : front statique en JS vanilla, sans build ni dépendance.
+- `index.html`, `style.css`, `script.js` : front statique en JS vanilla, sans build ni dépendance. Un seul écran : l'éditeur, puis le panneau d'analyse (schéma, vers courant et rimes proposées, familles, sons).
+  - L'éditeur est une `<textarea>` au texte transparent posée sur un miroir surligné (`#mirror`), dans une grille gouttière | texte | poignée | bande de flow | méta, une rangée de `--row` par ligne.
+  - Le miroir doit rester identique au pixel près à la textarea : jamais de gras, de padding, de marge, d'italique ni de changement de police dans le miroir, seulement couleur, fond, soulignés et `box-shadow`.
+  - `renderEditor()` reconstruit les rangées depuis `ta.value` à chaque frappe ; `patch()` ne remplace que les rangées changées. Une ligne reprend les surlignages de la ligne analysée de même texte (`matchVerses`).
+  - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`) dans `localStorage`.
 - `deploy/api/` : API Flask.
   - `app.py` : routes `POST /analyze`, `GET /query` (suggestions) et `GET /health`, limites de taille.
   - `analysis.py` : marqueurs et types de lignes, rimes de fin, assonances, rimes internes (`_internal`), sons, échos.
@@ -32,11 +36,12 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
 
 - `POST /api/analyze {"lines": [...]}` reçoit toutes les lignes du textarea, vides comprises. La réponse contient :
   - `rows[]` : une entrée par ligne reçue, `{type: verse|comment|section|adlib|blank, verse}` ;
-  - `lines[]` : une entrée par vers (`row`, `stanza`, `end`, `muted`, `group`, `kind`, `level`, `exact`, `partner`, `internal[]`…) ;
+  - `lines[]` : une entrée par vers (`row`, `stanza`, `end`, `muted`, `group`, `kind`, `level`, `exact`, `partner`, `internal[]`, `cells[]`…) ;
+  - `cells[]` : la bande de flow, une case par syllabe prononcée, `{s, v, m, g, w}` : syllabe, voyelle, marque (`end`, `asso`, `int`, `fam` ou `''`), groupe, indice du mot ;
   - `groups[]` : rimes de fin et assonances ;
   - `families[]` : familles de rimes internes sans rime de fin (clés `*n`, labels α, β…) ;
   - `sounds`, `echoes`.
-- Les indices de mots (`end`, `muted`, `internal[].i`, `with`) comptent les tokens de la ligne découpée sur les espaces : `trim().split(/\s+/)` en JS, `_WS` en Python. Les deux découpages doivent rester identiques.
+- Les indices de mots (`end`, `muted`, `internal[].i`, `with`, `cells[].w`) comptent les tokens de la ligne découpée sur les espaces : `trim().split(/\s+/)` en JS, `_WS` en Python. Les deux découpages doivent rester identiques.
 - Limites : 20 000 caractères (réponse 413), 400 vers analysés au plus.
 
 ## Marqueurs dans les paroles
@@ -82,5 +87,5 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
 ## Conventions
 
 - Code concis, dans le style existant. Commentaires et textes d'interface en français.
-- Couleurs uniquement par les variables de thème (`--col0..7`, `--text`, `--muted`…), en thème clair comme sombre.
+- Couleurs uniquement par les variables de thème (`--col0..7`, `--text`, `--muted`…). Il n'y a qu'un thème, clair.
 - Commits au format conventional commits, en anglais (`feat:`, `fix(style):`…).

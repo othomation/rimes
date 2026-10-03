@@ -22,8 +22,7 @@ Aujourd'hui, l'appli a deux panneaux : on écrit dans une textarea à gauche, et
   - surlignage « Tout | Fins de vers | Texte seul » (« Texte seul » replie aussi la bande) ;
   - « Flow » masque la bande ;
   - « Voyelles » colore toute la bande par voyelle ; il est désactivé quand la bande est masquée ;
-  - le panneau d'analyse est masquable ;
-  - thème clair (l'actuel) ou sombre (le bleu nuit de la maquette).
+  - le panneau d'analyse est masquable.
 - Desktop d'abord ; le mobile doit seulement rester utilisable.
 
 ## L'éditeur : une textarea transparente sur un miroir surligné
@@ -125,7 +124,7 @@ def syllabify(phon):
   - le niveau de zoom découle des seuils plus haut ;
   - la largeur auto se mesure sur le miroir (`scrollWidth` de la ligne la plus longue) plutôt que d'être estimée.
 - **Poignée** : pointer events avec capture du pointeur, plus le clavier (voir Décisions). Reprendre le code de la maquette.
-- **Préférences par navigateur** dans `localStorage`, avec try/catch : surlignage, flow, voyelles, panneau, largeur de bande, thème.
+- **Préférences par navigateur** dans `localStorage`, avec try/catch : surlignage, flow, voyelles, panneau, largeur de bande.
 - **À réutiliser** :
   - `fetchAnalysis`, `scanTokens` et `rowType`, `colorFamilies` ;
   - `applyWordReplacement`, qui garde son garde-fou par instantané ;
@@ -137,10 +136,8 @@ def syllabify(phon):
 
 **`style.css` et `index.html`**
 
-- Jetons du thème sombre « bleu nuit » de la maquette : fond `#141C28`, papier `#18212F`, filets `#26324A`, texte `#E8EDF4`.
 - Palettes de rimes :
-  - claire `#6B7C00 #C03A00 #007A53 #7C3AAD #B05200 #0369A1 #BE185D #3A7D00` ;
-  - sombre `#F2C94C #FF7A59 #3DD6A3 #B39DFF #FF8FD0 #5CC8FF #E879F9 #A3E635` ;
+  - rimes `#6B7C00 #C03A00 #007A53 #7C3AAD #B05200 #0369A1 #BE185D #3A7D00` ;
   - voyelles a `#FF8A65`, é `#FFE066`, i `#5EE0A8`, o `#6EC6FF`, ou `#8C9EFF`, u `#D69CFF`, eu `#FF7DB0`, an `#FFB347`, in `#B8E986`, on `#7FE7E7`.
 - Cases en Martian Mono condensée : nouvelle police Google Fonts, `wdth` 75.
 - Variables de mise en page : `--row`, `--strip`, et les largeurs de colonnes (numéro 44, lettre 30, poignée 12, méta 64).
@@ -154,7 +151,7 @@ Chacune se vérifie avant de passer à la suivante.
 2. Page unique et éditeur à miroir, sans la bande : alignement exact, frappe, sélection, accents (IME), défilement.
 3. Panneau, menu du titre, export, suppression des onglets.
 4. Bande de flow : cases, zoom, poignée, Flow, Voyelles, Texte seul.
-5. Thème bleu nuit, préférences, survol et infobulles.
+5. Préférences, survol et infobulles.
 6. Vérification complète, puis commit.
 
 ## Vérification
@@ -164,13 +161,14 @@ Chacune se vérifie avant de passer à la suivante.
   - pour chaque ligne, texte du miroir = ligne de la textarea ;
   - curseur placé au bout de « s'accrocher » → même position que le span du miroir, à 1 px près ;
   - surlignages intacts après une frappe ;
-  - poignée, bascules, deux thèmes ;
+  - poignée, bascules ;
   - 400 vers : une frappe redessine en moins de 16 ms ;
   - aucune erreur JS.
 - **À la main** : écrire, coller, annuler (Ctrl+Z, y compris après une suggestion), sélectionner, défiler, accents, suggestion appliquée sur la bonne ligne.
 
-## Points à trancher
+## Points tranchés (2026-10-03)
 
-- Clic sur un mot surligné : placer seulement le curseur, le panneau suivant, ou rouvrir un popover de suggestions ?
-- Échos multisyllabiques (ancien onglet Assonances) : les garder dans le panneau, ou s'en passer puisque la bande les montre ?
-- Thème sombre : remplacer le noir et jaune actuel par le bleu nuit de la maquette ?
+- Clic sur un mot surligné : il place seulement le curseur, et le panneau suit.
+- Échos multisyllabiques : retirés du panneau, gardés dans le rapport exporté.
+- Thème sombre : supprimé. Un seul thème, le clair actuel.
+- Sauvegarde : un texte = une entrée. « Sauver » met à jour le texte ouvert, « Nouveau texte » en commence un autre, et le dernier texte ouvert revient au rechargement. « Enregistré » ou « Modifié » compare le texte à sa dernière sauvegarde.
