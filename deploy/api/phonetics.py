@@ -70,6 +70,25 @@ def syllables(phon):
     return sum(1 for c in phon if c in VOWELS)
 
 
+_ONSET2 = {'pR', 'bR', 'tR', 'dR', 'kR', 'gR', 'fR', 'vR', 'pl', 'bl', 'kl', 'gl', 'fl'}
+
+
+@lru_cache(maxsize=4096)
+def syllabify(phon):
+    """Syllabes phonétiques, attaque maximale : consonne + liquide, puis semi-voyelle (`kRwa`)."""
+    idx = [i for i, c in enumerate(phon) if c in VOWELS]
+    if not idx:
+        return ()
+    cuts = [0]
+    for a, b in zip(idx, idx[1:]):
+        cluster = phon[a + 1:b]
+        j = len(cluster) - (cluster[-1:] in ('j', 'w', '8'))    # la semi-voyelle va à l'attaque
+        j -= 2 if j >= 2 and cluster[j - 2:j] in _ONSET2 else min(j, 1)
+        cuts.append(a + 1 + j)
+    cuts.append(len(phon))
+    return tuple(phon[s:e] for s, e in zip(cuts, cuts[1:]))
+
+
 def common_suffix(a, b):
     n = 0
     for x, y in zip(reversed(a), reversed(b)):

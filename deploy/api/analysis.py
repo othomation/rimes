@@ -252,14 +252,42 @@ def analyze(rows, lex):
     for g in groups:
         g['levels'] = dict(g['levels'])
 
+    families = _internal(verses, parsed, out_lines)
+    for p, line in zip(parsed, out_lines):
+        line['cells'] = _cells(p, line)
+
     return {
         'rows': out_rows,
         'lines': out_lines,
         'groups': groups,
-        'families': _internal(verses, parsed, out_lines),
+        'families': families,
         'sounds': _sounds(parsed, lex.baseline),
         'echoes': _echoes(parsed, line_group),
     }
+
+
+def _cells(p, line):
+    """Bande de flow : une case par syllabe prononcée, {s, v, m, g, w}.
+
+    s syllabe lisible, v sa voyelle (é/è, o/ɔ, eu/schwa, in/un confondus), w l'indice du mot,
+    m la marque (end, asso, int, fam ou '') et g le groupe ou la famille qui la porte."""
+    sylls = [(t, s) for t, w in enumerate(p['words']) if w for s in P.syllabify(w['phon'])]
+    cells = [{'s': P.display(s), 'v': P.display(P.loose(next(c for c in s if c in P.VOWELS))),
+              'm': '', 'g': None, 'w': t} for t, s in sylls]
+    # Rime interne : les syllabes des voyelles communes, à la fin du mot
+    for it in line['internal']:
+        n, mark = max(1, it['v']), 'fam' if it['group'].startswith('*') else 'int'
+        for k in reversed([k for k, (t, _) in enumerate(sylls) if t == it['i']]):
+            if not n:
+                break
+            cells[k].update(m=mark, g=it['group'])
+            n -= '°' not in sylls[k][1]     # le schwa ne compte pas dans `v`
+    # Fin de vers : les syllabes communes avec le partenaire, à travers les mots ; une seule pour une assonance
+    if line['kind']:
+        n = max(1, line['syl_match']) if line['kind'] == 'rime' else 1
+        for c in cells[-n:]:
+            c.update(m='end' if line['kind'] == 'rime' else 'asso', g=line['group'])
+    return cells
 
 
 # ── Rimes internes ──
