@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rime — Analyse de schémas de rimes</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 <style id="focusStyle"></style>
 </head>
 <body>
@@ -22,6 +22,10 @@
       <button class="menu-item" onclick="newDoc()">Nouveau texte</button>
       <div class="menu-label">Textes sauvés</div>
       <div id="docList"></div>
+      <div class="menu-sep"></div>
+      <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
+      <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
+      <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
     </div>
   </div>
   <span class="doc-state" id="docState"></span>
@@ -36,8 +40,11 @@
   <div class="menu-wrap">
     <button class="tog" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu">Exporter</button>
     <div class="menu menu-right" id="exportMenu" hidden>
-      <button class="menu-item" onclick="exportCopy()">Copier le rapport</button>
-      <button class="menu-item" onclick="exportTxt()">Télécharger le .txt</button>
+      <button class="menu-item" onclick="downloadText()">Télécharger le texte <kbd>.txt</kbd></button>
+      <button class="menu-item" id="shareItem" onclick="shareText()" title="Vers Notes, Mail, Drive… selon l'appareil">Partager…</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item" onclick="copyReport()">Copier le rapport d'analyse</button>
+      <button class="menu-item" onclick="downloadReport()">Télécharger le rapport <kbd>.txt</kbd></button>
     </div>
   </div>
   <button class="icon-btn" id="railBtn" aria-pressed="true" aria-label="Panneau d'analyse" title="Afficher ou masquer le panneau d'analyse">
@@ -127,6 +134,6 @@
 
 <div class="tip" id="tip" role="tooltip" hidden></div>
 
-<script src="script.js?v=3"></script>
+<script src="script.js?v=4"></script>
 </body>
 </html>

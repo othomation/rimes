@@ -47,6 +47,7 @@ body {
   overflow: hidden;
 }
 button, input, select { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--text2); outline-offset: 2px; }
 .stroke { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -102,6 +103,7 @@ button { cursor: pointer; }
 }
 .menu-item:hover { background: var(--surface2); }
 .menu-item kbd { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); }
+.menu-sep { height: 1px; margin: 6px 4px; background: var(--border); }
 .menu-label { margin: 8px 10px 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 #docList { max-height: 50vh; overflow-y: auto; }
 .doc-item { display: flex; align-items: center; border-radius: 6px; }

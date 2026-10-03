@@ -46,7 +46,8 @@ const wide = window.innerWidth > 760;
 const prefs = { mode: 'all', flow: wide, vow: false, rail: wide, strip: null, ...stored('rime-prefs', {}) };
 const savePrefs = () => store('rime-prefs', prefs);
 
-let docs = stored('rime-history', []);                // textes sauvés : { id, text, date }
+// Textes sauvés : { id, text, updated } (updated en ms ; les anciennes entrées n'avaient que leur id)
+let docs = stored('rime-history', []).map(d => ({ id: d.id, text: d.text, updated: d.updated ?? d.id }));
 const doc = { id: null, text: '', ...stored('rime-current', {}) };   // texte ouvert, même non sauvé
 
 // ── API ──
@@ -825,7 +826,7 @@ function renderDocList() {
     <div class="doc-item${d.id === doc.id ? ' current' : ''}">
       <button class="doc-open" onclick="openDoc(${d.id})">
         <span class="doc-name">${escHtml(docTitle(d.text) || 'Sans titre')}</span>
-        <span class="doc-meta">${escHtml(d.date)} · ${d.text.split('\n').filter(l => rowType(l) === 'verse').length} vers</span>
+        <span class="doc-meta">${new Date(d.updated).toLocaleDateString('fr')} · ${d.text.split('\n').filter(l => rowType(l) === 'verse').length} vers</span>
       </button>
       <button class="doc-del" onclick="deleteDoc(${d.id})" aria-label="Supprimer ce texte">×</button>
     </div>`).join('') || '<p class="menu-empty">Aucun texte sauvé pour l\'instant.</p>';
@@ -834,7 +835,7 @@ function renderDocList() {
 function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
-  const item = { id: doc.id ?? Date.now(), text, date: new Date().toLocaleDateString('fr') };
+  const item = { id: doc.id ?? Date.now(), text, updated: Date.now() };
   // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
   const next = [item, ...docs.filter(d => d.id !== item.id)];
   if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
@@ -887,6 +888,57 @@ function persistDraft() {
 }
 addEventListener('pagehide', persistDraft);
 
+// Sauvegarde de tous les textes sauvés, réimportable
+function exportAll() {
+  if (!docs.length) { toast('Aucun texte sauvé à exporter'); return; }
+  const now = new Date();
+  download(`rime-textes-${now.toISOString().slice(0, 10)}.json`,
+    JSON.stringify({ app: 'rime', version: 1, exported: now.toISOString(), texts: docs }, null, 2), 'application/json');
+}
+
+// Importe des sauvegardes Rime (.json) et des paroles (.txt) dans les textes sauvés.
+// Rien n'est jamais écrasé : un texte déjà sauvé à l'identique est ignoré, un id déjà pris est remplacé.
+async function importFiles(files) {
+  const found = [], unreadable = [];
+  for (const f of files) {
+    const raw = (await f.text()).replace(/\r\n?/g, '\n');
+    if (!/\.json$/i.test(f.name)) { found.push({ text: raw }); continue; }
+    try {
+      const data = JSON.parse(raw);
+      if (data?.app !== 'rime' || !Array.isArray(data.texts)) throw new Error();
+      data.texts.forEach(t => { if (typeof t?.text === 'string') found.push({ ...t, text: t.text.replace(/\r\n?/g, '\n') }); });
+    } catch {
+      unreadable.push(f.name);
+    }
+  }
+  const texts = new Set(docs.map(d => d.text)), ids = new Set(docs.map(d => d.id));
+  let fresh = Date.now();
+  const added = [];
+  for (const t of found) {
+    if (!t.text.trim() || texts.has(t.text)) continue;
+    texts.add(t.text);
+    let id = Number.isSafeInteger(t.id) && !ids.has(t.id) ? t.id : null;
+    while (id === null || ids.has(id)) id = fresh++;
+    ids.add(id);
+    added.push({ id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now() });
+  }
+  const skipped = found.length - added.length;
+  const note = [skipped && `${skipped} déjà présent${skipped > 1 ? 's' : ''} ou vide${skipped > 1 ? 's' : ''}`,
+    unreadable.length && `illisible : ${unreadable.join(', ')}`].filter(Boolean).join(' · ');
+  if (!added.length) { toast(`Rien de nouveau à importer${note ? ` (${note})` : ''}`); return; }
+  const next = [...added, ...docs].sort((a, b) => b.updated - a.updated);
+  if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
+  docs = next;
+  renderDocState();
+  toast(`${added.length} texte${added.length > 1 ? 's' : ''} importé${added.length > 1 ? 's' : ''}${note ? ` (${note})` : ''}`);
+  if (added.length === 1) openDoc(added[0].id);
+}
+
+$('importInput').addEventListener('change', async e => {
+  await importFiles([...e.target.files]);
+  e.target.value = '';
+});
+
 // ── Export ──
 function buildReport() {
   if (!lastResult) return '';
@@ -933,17 +985,50 @@ function buildReport() {
   return r;
 }
 
-function exportCopy() {
+function copyReport() {
   if (!lastResult) { toast('Rien à exporter'); return; }
   navigator.clipboard.writeText(buildReport()).then(() => toast('Rapport copié ✓'), () => toast('Copie refusée par le navigateur'));
 }
 
-function exportTxt() {
+function downloadReport() {
   if (!lastResult) { toast('Rien à exporter'); return; }
+  download(`${fileStem(ta.value)}-rapport.txt`, buildReport());
+}
+
+function downloadText() {
+  if (!ta.value.trim()) { toast('Rien à exporter'); return; }
+  download(`${fileStem(ta.value)}.txt`, ta.value);
+}
+
+// Feuille de partage du système : Notes, Mail, Drive… selon l'appareil.
+// Sans elle (Firefox sur ordinateur…), le texte est copié pour être collé ailleurs.
+async function shareText() {
+  if (!ta.value.trim()) { toast('Rien à partager'); return; }
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: docTitle(ta.value) || 'Rime', text: ta.value });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+  navigator.clipboard.writeText(ta.value).then(
+    () => toast('Partage indisponible ici : texte copié, colle-le où tu veux'),
+    () => toast('Partage et copie refusés par le navigateur'));
+}
+
+// Nom de fichier tiré du titre : « Coûts irrécupérables » → « couts-irrecuperables »
+function fileStem(text) {
+  return docTitle(text).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'rime-texte';
+}
+
+function download(name, content, type = 'text/plain') {
   const a = document.createElement('a');
-  a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(buildReport());
-  a.download = 'rime-rapport.txt';
+  a.href = URL.createObjectURL(new Blob([content], { type: `${type};charset=utf-8` }));
+  a.download = name;
   a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

@@ -8,7 +8,8 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
   - L'éditeur est une `<textarea>` au texte transparent posée sur un miroir surligné (`#mirror`), dans une grille gouttière | texte | poignée | bande de flow | méta, une rangée de `--row` par ligne.
   - Le miroir doit rester identique au pixel près à la textarea : jamais de gras, de padding, de marge, d'italique ni de changement de police dans le miroir, seulement couleur, fond, soulignés et `box-shadow`.
   - `renderEditor()` reconstruit les rangées depuis `ta.value` à chaque frappe ; `patch()` ne remplace que les rangées changées. Une ligne reprend les surlignages de la ligne analysée de même texte (`matchVerses`).
-  - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`) dans `localStorage`.
+  - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`, `{id, text, updated}`) dans `localStorage`, sans plafond.
+  - Sauvegarde exportée : `{app: 'rime', version: 1, exported, texts: [...]}`. L'import accepte ce format et des `.txt`, et n'écrase jamais un texte sauvé.
 - `deploy/api/` : API Flask.
   - `app.py` : routes `POST /analyze`, `GET /query` (suggestions) et `GET /health`, limites de taille.
   - `analysis.py` : marqueurs et types de lignes, rimes de fin, assonances, rimes internes (`_internal`), sons, échos.
