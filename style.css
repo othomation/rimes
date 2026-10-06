@@ -459,11 +459,17 @@ button { cursor: pointer; }
 .link-tag { padding: 0 6px; border-radius: 999px; border: 1px solid var(--border2); font-size: 11px; color: var(--text2); white-space: nowrap; }
 
 /* ── Panneau Textes : dossiers, textes, filtre par tags ── */
-.lib { display: none; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--border); }
+.lib { display: none; flex-direction: column; min-height: 0; position: relative; background: var(--bg); border-right: 1px solid var(--border); }
 .body.with-lib > .lib { display: flex; }
-.body.with-lib { grid-template-columns: 272px minmax(0, 1fr) 330px; }
-.body.with-lib.no-rail { grid-template-columns: 272px minmax(0, 1fr); }
-.body.with-lib.versions, .body.with-lib.no-rail.versions { grid-template-columns: 272px minmax(0, 1fr) 360px; }
+/* --lib-w : largeur du panneau, posée par le script (glisser sa tranche droite) */
+.body.with-lib { grid-template-columns: var(--lib-w, 272px) minmax(0, 1fr) 330px; }
+.body.with-lib.no-rail { grid-template-columns: var(--lib-w, 272px) minmax(0, 1fr); }
+.body.with-lib.versions, .body.with-lib.no-rail.versions { grid-template-columns: var(--lib-w, 272px) minmax(0, 1fr) 360px; }
+.lib-grip { position: absolute; top: 0; bottom: 0; right: -5px; z-index: 5; width: 10px; padding: 0; border: 0; background: transparent; cursor: col-resize; touch-action: none; }
+.lib-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px; border-radius: 1px; transition: background .12s; }
+.lib-grip:hover::after, .lib-grip:focus-visible::after, .body.lib-resizing .lib-grip::after { background: var(--text2); }
+.lib-grip:focus-visible { outline: none; }
+.body.lib-resizing { cursor: col-resize; user-select: none; }
 .lib-head { display: flex; align-items: center; gap: 2px; padding: 14px 10px 8px 18px; }
 .lib-head h2 { flex: 1; font-size: 15px; font-weight: 700; }
 .lib-create { display: flex; flex-direction: column; gap: 6px; margin: 0 10px 8px; padding: 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border2); }
@@ -649,6 +655,7 @@ button { cursor: pointer; }
   .seg button, .tog { padding: 0 9px; }
   .body, .body.with-lib, .body.with-lib.no-rail, .body.with-lib.versions, .body.with-lib.no-rail.versions { grid-template-columns: minmax(0, 1fr); position: relative; }
   .lib { position: absolute; top: 0; left: 0; bottom: 0; width: min(300px, 88vw); z-index: 31; box-shadow: 8px 0 28px var(--shadow); }
+  .lib-grip { display: none; }
   .rail { position: absolute; top: 0; right: 0; bottom: 0; width: min(330px, 88vw); z-index: 30; border-left: 1px solid var(--border); box-shadow: -8px 0 28px var(--shadow); }
   .ed-head, .ed-grid { padding-right: 8px; }
   .editor { --cols: 58px minmax(0, 1fr) 12px var(--strip) 44px; }

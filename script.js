@@ -777,6 +777,7 @@ function applyPrefs() {
   $('stanzaBtn').setAttribute('aria-pressed', !!prefs.stanza);
   document.querySelector('.body').classList.toggle('no-rail', !prefs.rail);
   document.querySelector('.body').classList.toggle('with-lib', !!prefs.lib);
+  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
   $('railBtn').setAttribute('aria-pressed', prefs.rail);
   $('libBtn').setAttribute('aria-pressed', !!prefs.lib);
   renderLegend();
@@ -1232,6 +1233,44 @@ $('lib').addEventListener('click', e => {
   renderLib();
 });
 $('libClear').addEventListener('click', () => { libState.filter.clear(); renderLib(); });
+
+// Largeur du panneau Textes : on glisse sa tranche droite, l'éditeur garde au moins 700 px avec le panneau d'analyse
+const LIB_W = 272;
+const libWidth = (w = prefs.libW) => Math.round(Math.min(Math.max(220, Math.min(560, window.innerWidth - 700)), Math.max(220, w ?? LIB_W)));
+let libDrag = null;
+
+function setLibWidth(w) {
+  prefs.libW = w === null ? null : libWidth(w);
+  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
+  layoutStrip();
+}
+
+$('libGrip').addEventListener('pointerdown', e => {
+  if (e.button) return;
+  e.preventDefault();
+  $('libGrip').setPointerCapture(e.pointerId);
+  libDrag = { x: e.clientX, w: libWidth() };
+  document.querySelector('.body').classList.add('lib-resizing');
+});
+$('libGrip').addEventListener('pointermove', e => { if (libDrag) setLibWidth(libDrag.w + e.clientX - libDrag.x); });
+const endLibDrag = () => {
+  if (!libDrag) return;
+  libDrag = null;
+  document.querySelector('.body').classList.remove('lib-resizing');
+  savePrefs();
+};
+$('libGrip').addEventListener('pointerup', endLibDrag);
+$('libGrip').addEventListener('lostpointercapture', endLibDrag);
+$('libGrip').addEventListener('dblclick', () => { setLibWidth(null); savePrefs(); });
+$('libGrip').addEventListener('keydown', e => {
+  const step = e.shiftKey ? 60 : 20;
+  if (e.key === 'ArrowRight') setLibWidth(libWidth() + step);
+  else if (e.key === 'ArrowLeft') setLibWidth(libWidth() - step);
+  else if (e.key === 'Home') setLibWidth(null);
+  else return;
+  e.preventDefault();
+  savePrefs();
+});
 $('libNewText').addEventListener('click', () => { if (narrow()) { prefs.lib = false; prefsChanged(); } newDoc(); });
 $('libNewFolder').addEventListener('click', () => {
   $('libCreate').hidden = false;
@@ -2949,7 +2988,11 @@ document.addEventListener('keydown', e => {
   }
 });
 
-addEventListener('resize', () => layoutStrip());
+// La fenêtre change : le panneau Textes reste dans ses bornes, la bande de flow se recalcule
+addEventListener('resize', () => {
+  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
+  layoutStrip();
+});
 
 // ── Démarrage : le dernier texte ouvert revient ──
 (function init() {
