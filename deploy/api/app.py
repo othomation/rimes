@@ -45,7 +45,7 @@ def analyze_route():
         return jsonify({'error': 'lines doit être une liste de chaînes'}), 400
     if len(lines) + sum(map(len, lines)) > MAX_CHARS:   # retours à la ligne compris
         return jsonify({'error': 'texte trop long'}), 413
-    return jsonify(analyze(lines, lexicon))
+    return jsonify(analyze(lines, lexicon, whole_stanza=body.get('stanza') is True))
 
 
 @app.route('/health')

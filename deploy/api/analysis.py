@@ -115,7 +115,8 @@ def _best_partner(i, members, parsed):
     return best
 
 
-def analyze(rows, lex):
+def analyze(rows, lex, whole_stanza=False):
+    """whole_stanza : rimes de strophe, un mot accentué rime avec toute fin de vers de sa strophe."""
     # ── Lignes : vers, strophes (lignes vides) et blocs ([sections]) ──
     out_rows, verses = [], []
     stanza = block = 0
@@ -252,7 +253,7 @@ def analyze(rows, lex):
     for g in groups:
         g['levels'] = dict(g['levels'])
 
-    families = _internal(verses, parsed, out_lines)
+    families = _internal(verses, parsed, out_lines, whole_stanza)
     for p, line in zip(parsed, out_lines):
         line['cells'] = _cells(p, line)
 
@@ -308,6 +309,8 @@ def _accented(words, spoken, i):
 
 def _linked(a, b, d, k, v):
     """La rime interne s'entend-elle ? k phonèmes et v voyelles en commun, d vers d'écart."""
+    if d > FAR:
+        return False
     if k >= 2:
         return d <= NEAR or (k >= 3 and v >= 2)
     if d == 0 and a['series'] and a['key'] != 'e':
@@ -317,7 +320,12 @@ def _linked(a, b, d, k, v):
     return v >= 2 or a['key'] not in COMMON_KEYS    # s'accrocher ~ côté, jeu ~ Dieux
 
 
-def _internal(verses, parsed, lines):
+def _echo(a, b):
+    """Rime de strophe : un mot accentué et une fin de vers de la même strophe, à toute distance."""
+    return a['stanza'] == b['stanza'] and (a['end'] or b['end']) and not (a['guess'] or b['guess'])
+
+
+def _internal(verses, parsed, lines, whole_stanza=False):
     """Familles de mots qui riment à l'intérieur des vers ; remplit lines[…]['internal']."""
     nodes = []
     for li, (v, p) in enumerate(zip(verses, parsed)):
@@ -336,7 +344,7 @@ def _internal(verses, parsed, lines):
             w = words[i]
             vi = P.last_vowel_index(w['phon'])
             nodes.append({
-                'li': li, 'i': i, 'end': i == end, 'block': v['block'],
+                'li': li, 'i': i, 'end': i == end, 'block': v['block'], 'stanza': v['stanza'],
                 'word': w['word'], 'lemmes': w['lemmes'], 'guess': w['guess'], 'rime': w['phon'][vi:],
                 'key': P.voiced_key(w['phon']), 'strict': P.rhyme_key(w['phon']),
                 'onset': P.loose(w['phon'][:vi].replace('°', '')), 'vowels': P.vowels(w['phon'].replace('°', '')),
@@ -357,7 +365,7 @@ def _internal(verses, parsed, lines):
             for b in ids[j + 1:j + 1 + PAIR_SPAN]:
                 B = nodes[b]
                 d = B['li'] - A['li']
-                if d > FAR:
+                if d > FAR and not (whole_stanza and B['stanza'] == A['stanza']):
                     break
                 if d == 0 and B['i'] - A['i'] > LINE_SPAN:
                     continue
@@ -365,11 +373,12 @@ def _internal(verses, parsed, lines):
                     continue
                 k = len(A['key']) + P.common_suffix(A['onset'], B['onset'])
                 v = P.common_suffix(A['vowels'], B['vowels'])
-                if _linked(A, B, d, k, v):
-                    edges.append((A['strict'] == B['strict'], k, v, d, a, b))
+                linked = _linked(A, B, d, k, v)
+                if linked or whole_stanza and _echo(A, B):
+                    edges.append((A['strict'] == B['strict'], k, v, d, a, b, not linked))
 
-    # Du lien le plus fort au plus faible, sans jamais fondre deux rimes de fin
-    edges.sort(key=lambda e: (not e[0], -e[1], -e[2], e[3]))
+    # Du lien le plus fort au plus faible, sans jamais fondre deux rimes de fin ; les rimes de strophe en dernier
+    edges.sort(key=lambda e: (e[6], not e[0], -e[1], -e[2], e[3]))
     parent = list(range(len(nodes)))
     owner = [nd['group'] for nd in nodes]
 
@@ -379,17 +388,17 @@ def _internal(verses, parsed, lines):
             x = parent[x]
         return x
 
-    for *_, a, b in edges:
-        ra, rb = find(a), find(b)
+    for e in edges:
+        ra, rb = find(e[4]), find(e[5])
         if ra != rb and not (owner[ra] and owner[rb] and owner[ra] != owner[rb]):
             parent[rb] = ra
             owner[ra] = owner[ra] or owner[rb]
 
     partner = {}    # lien le plus fort de chaque mot vers sa famille
-    for exact, k, v, d, a, b in edges:
+    for exact, k, v, d, a, b, echo in edges:
         if find(a) == find(b):
-            partner.setdefault(a, (b, k, v, exact))
-            partner.setdefault(b, (a, k, v, exact))
+            partner.setdefault(a, (b, k, v, exact, echo))
+            partner.setdefault(b, (a, k, v, exact, echo))
 
     members = defaultdict(list)
     for x in range(len(nodes)):
@@ -408,9 +417,11 @@ def _internal(verses, parsed, lines):
             nd = nodes[x]
             if nd['end'] and lines[nd['li']]['group']:
                 continue
-            y, k, v, exact = partner[x]
-            lines[nd['li']]['internal'].append({'i': nd['i'], 'group': key, 'with': [nodes[y]['li'], nodes[y]['i']],
-                                                'k': k, 'v': v, 'exact': exact})
+            y, k, v, exact, echo = partner[x]
+            it = {'i': nd['i'], 'group': key, 'with': [nodes[y]['li'], nodes[y]['i']], 'k': k, 'v': v, 'exact': exact}
+            if echo:
+                it['echo'] = True   # rime de strophe : ce lien n'existe que grâce à l'option
+            lines[nd['li']]['internal'].append(it)
     for line in lines:
         line['internal'].sort(key=lambda it: it['i'])
     return families
