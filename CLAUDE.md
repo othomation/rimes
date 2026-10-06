@@ -4,12 +4,19 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
 
 ## Architecture
 
-- `index.html`, `style.css`, `script.js` : front statique en JS vanilla, sans build ni dépendance. Un seul écran : l'éditeur, puis le panneau d'analyse (schéma, vers courant et rimes proposées, familles, sons).
+- `index.html`, `style.css`, `script.js` : front statique en JS vanilla, sans build ni dépendance. Un seul écran : le panneau Textes à gauche, l'éditeur, puis le panneau d'analyse (ce texte, prod, schéma, vers courant et rimes proposées, familles, sons).
   - L'éditeur est une `<textarea>` au texte transparent posée sur un miroir surligné (`#mirror`), dans une grille gouttière | texte | poignée | bande de flow | méta, une rangée de `--row` par ligne.
   - Le miroir doit rester identique au pixel près à la textarea : jamais de gras, de padding, de marge, d'italique ni de changement de police dans le miroir, seulement couleur, fond, soulignés et `box-shadow`.
   - `renderEditor()` reconstruit les rangées depuis `ta.value` à chaque frappe ; `patch()` ne remplace que les rangées changées. Une ligne reprend les surlignages de la ligne analysée de même texte (`matchVerses`).
-  - Préférences (`rime-prefs`), texte ouvert (`rime-current`) et textes sauvés (`rime-history`, `{id, text, updated}`) dans `localStorage`, sans plafond.
-  - Sauvegarde exportée : `{app: 'rime', version: 1, exported, texts: [...]}`. L'import accepte ce format et des `.txt`, et n'écrase jamais un texte sauvé.
+  - Préférences (`rime-prefs`), texte ouvert (`rime-current`), textes sauvés (`rime-history`) et dossiers (`rime-folders`, `{id, name, drive, pending}`) dans `localStorage`, sans plafond.
+    - Un texte sauvé : `{id, text, updated, folder, tags, prods, prod}`, plus `drive`, `pending`, `metaPending`, `conflict` avec Drive. Tous les champs sont gardés au chargement.
+    - Dossier, tags et prods s'appliquent sans « Sauver » (`metaChanged`) : sur un texte sauvé, `metaPending` les envoie seuls vers Drive. Un brouillon (pas encore sauvé) les porte dans `rime-current` et les transmet à la sauvegarde.
+  - Panneau Textes (`#lib`, bouton à gauche de l'en-tête) : arbre des dossiers puis « Sans dossier », menus « … » (déplacer, renommer, supprimer), filtre par tags (un texte doit tous les porter). Tags comparés sans casse ni accents (`foldKey`), sans virgule, 30 caractères au plus.
+  - En tête du panneau d'analyse : « Ce texte » (dossier, tags) puis « Prod ».
+    - Prods : liens YouTube seulement, `prods: [{v, t, bpm}]` et `prod` (la prod active). Titre par oEmbed, sinon par le lecteur. BPM au clavier ou au Tap (4 à 8 temps).
+    - Lecteur : API IFrame de YouTube (`youtube-nocookie.com`), chargée à la première prod. Une vidéo ne se joue pas cachée : plier le lecteur, masquer le panneau ou passer en mode Versions met en pause. Pendant la lecture, le lecteur reste collé en haut du panneau. Ctrl+Espace : lecture et pause.
+  - Bascule « Strophe » de l'en-tête : `stanza` dans `rime-prefs` et dans la requête d'analyse.
+  - Sauvegarde exportée : `{app: 'rime', version: 3, exported, folders, texts: [...], versions?}`, les textes avec leurs dossier, tags et prods. L'import accepte les versions 1 à 3 et des `.txt`, retrouve les dossiers par leur nom, et n'écrase jamais un texte sauvé.
   - Historique des versions : une copie complète du texte à chaque « Sauver » qui le change, dans IndexedDB (base `rime`, magasin `versions`, index `docId`).
     - Le diff est calculé à l'affichage : plus longue sous-suite commune sur les lignes, puis sur les mots (`diffRows`).
     - Mode Versions (bouton ou Ctrl+Maj+H) : la comparaison remplace l'éditeur, masqué mais pas détruit pour garder sa pile d'annulation, et la liste remplace le panneau.
@@ -17,11 +24,13 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
     - Avant qu'une synchro Drive remplace un texte, la version locale est gardée.
   - Synchro Google Drive facultative, sans serveur : un `.txt` par texte sauvé, avec la permission `drive.file`. Le fichier porte l'id du texte dans `appProperties.rimeId`.
     - Le nom du dossier est choisi à la connexion (« Rime » par défaut) et renommable depuis Rime. Rime ne voit que ce qu'il a créé : il retrouve son dossier et ses fichiers même déplacés ou renommés dans Drive, et un fichier sorti du dossier reste synchronisé.
-    - Le script Google Identity Services n'est chargé que si Drive sert. Son jeton d'accès dure une heure ; ensuite, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
+    - Le script Google Identity Services n'est chargé que si Drive sert. Son jeton d'accès dure une heure et survit au rechargement. Ensuite, la sauvegarde suivante (ou « Reconnecter Drive ») rouvre la fenêtre Google, avec le compte en `login_hint` : elle se referme seule si la session Google est ouverte. Fermée sans connexion, elle ne se rouvre plus d'elle-même jusqu'au rechargement.
     - Un texte modifié des deux côtés garde les deux versions : celle de Drive devient une copie « (conflit) ». Un texte supprimé dans Rime va à la corbeille Drive.
-    - État dans `rime-drive` (`localStorage`) et jeton dans `rime-drive-token` (`sessionStorage`). Les textes sauvés gagnent `drive: {id, rev}` et `pending`.
+    - Dossiers de textes : sous-dossiers du dossier de Rime, synchronisés avant les textes (création, renommage dans les deux sens). Le parent d'un fichier donne son dossier ; un parent hors de Rime laisse le dossier tel quel. Un dossier supprimé ici part à la corbeille une fois vidé (`trashFolders`).
+    - Tags et prods dans la description du fichier, lisible et modifiable dans Drive : `Tags : a, b` et `Prod : <titre> · 92 BPM · https://youtu.be/<id> · active`. Les autres lignes sont gardées (`driveNote`). Sans `metaPending`, ce que dit Drive l'emporte.
+    - État dans `rime-drive` et jeton dans `rime-drive-token`, tous deux dans `localStorage`.
     - Versions : `<dossier>/Versions/<titre>/<AAAA-MM-JJ HHhMM — nom>.txt`, un fichier par version, qui ne change jamais. La synchro fait l'union des deux côtés, plus les suppressions, l'épingle et le nom.
-    - Marques privées : fichiers de versions `rimeVersion`, `rimeId`, `at`, `pinned`, `label` ; dossiers `rime: 'root' | 'versions'` et `rimeVersionsOf`. Un dossier perdu fait repartir ce qu'il contenait, sans rien effacer ici.
+    - Marques privées : fichiers de versions `rimeVersion`, `rimeId`, `at`, `pinned`, `label` ; dossiers `rime: 'root' | 'versions' | 'folder'`, `rimeFolder` et `rimeVersionsOf`. Un dossier perdu fait repartir ce qu'il contenait, sans rien effacer ici.
     - Projet Google Cloud de Rime : ID client OAuth dans `GOOGLE_CLIENT_ID`, avec pour origines autorisées `https://rime.menace.cloud` et `http://localhost:8080`.
 - `deploy/api/` : API Flask.
   - `app.py` : routes `POST /analyze`, `GET /query` (suggestions) et `GET /health`, limites de taille.
@@ -48,9 +57,9 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
 
 ## Contrat de l'API
 
-- `POST /api/analyze {"lines": [...]}` reçoit toutes les lignes du textarea, vides comprises. La réponse contient :
+- `POST /api/analyze {"lines": [...], "stanza": true}` reçoit toutes les lignes du textarea, vides comprises ; `stanza` (facultatif) active les rimes de strophe. La réponse contient :
   - `rows[]` : une entrée par ligne reçue, `{type: verse|comment|section|adlib|blank, verse}` ;
-  - `lines[]` : une entrée par vers (`row`, `stanza`, `end`, `muted`, `group`, `kind`, `level`, `exact`, `partner`, `internal[]`, `cells[]`…) ;
+  - `lines[]` : une entrée par vers (`row`, `stanza`, `end`, `muted`, `group`, `kind`, `level`, `exact`, `partner`, `internal[]`, `cells[]`…). Une rime interne qui n'existe que grâce aux rimes de strophe porte `echo: true` ;
   - `cells[]` : la bande de flow, une case par syllabe prononcée, `{s, v, m, g, w}` : syllabe, voyelle, marque (`end`, `asso`, `int`, `fam` ou `''`), groupe, indice du mot ;
   - `groups[]` : rimes de fin et assonances ;
   - `families[]` : familles de rimes internes sans rime de fin (clés `*n`, labels α, β…) ;
@@ -90,6 +99,7 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
     3. mot deviné hors lexique : aucun autre lien ;
     4. `v ≥ 2` : seulement vers une fin de vers, `d ≤ 1` ;
     5. sinon : seulement vers une fin de vers, `d ≤ 1`, clé hors é/an/i.
+    6. rimes de strophe (option `stanza`) : en plus, un mot se lie à toute fin de vers de sa strophe, à n'importe quelle distance, sauf mot deviné (`_echo`).
   - Les familles se forment en unissant les liens du plus fort au plus faible, sans jamais fondre deux rimes de fin.
   - Constantes en tête d'`analysis.py` : `NEAR`, `FAR`, `LINE_SPAN`, `PAIR_SPAN`, `COMMON_KEYS`.
 - **Cas de non-régression** à garder :

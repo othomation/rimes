@@ -5,73 +5,109 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rime — Analyse de schémas de rimes</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=7">
 <style id="focusStyle"></style>
 </head>
 <body>
 
 <header class="top">
+  <button class="icon-btn" id="libBtn" aria-pressed="true" aria-label="Panneau Textes" title="Afficher ou masquer le panneau des textes : dossiers et tags">
+    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" class="stroke"><path d="M2.5 3.5h13v11h-13Z M6.5 3.5v11"/></svg>
+  </button>
   <div class="logo">RIME</div>
-  <div class="menu-wrap">
-    <button class="doc-btn" id="docBtn" aria-haspopup="true" aria-expanded="false" aria-controls="docMenu" title="Textes sauvés">
-      <span class="doc-title" id="docTitle">Sans titre</span>
-      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" class="stroke"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
+  <!-- Le titre rétrécit d'abord ; s'il manque encore de la place, les outils passent à la ligne -->
+  <div class="top-doc">
+    <div class="menu-wrap">
+      <button class="doc-btn" id="docBtn" aria-haspopup="true" aria-expanded="false" aria-controls="docMenu" title="Sauver, nouveau texte, export, import, Google Drive">
+        <span class="doc-title" id="docTitle">Sans titre</span>
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" class="stroke"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
+      </button>
+      <div class="menu doc-menu" id="docMenu" hidden>
+        <button class="menu-item" onclick="saveDoc()">Sauver <kbd>Ctrl+S</kbd></button>
+        <button class="menu-item" onclick="newDoc()">Nouveau texte</button>
+        <p class="menu-note">Tes textes sont rangés dans le panneau Textes, à gauche.</p>
+        <div class="menu-sep"></div>
+        <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
+        <label class="menu-check"><input type="checkbox" id="exportHistory" checked> avec l'historique des versions</label>
+        <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
+        <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
+        <div class="menu-label">Google Drive</div>
+        <div id="driveOff">
+          <label class="menu-field">Nom du dossier dans ton Drive
+            <input type="text" id="driveFolderName" placeholder="Rime" maxlength="100" autocomplete="off">
+          </label>
+          <button class="menu-item" onclick="connectDrive()">Synchroniser avec Google Drive</button>
+          <p class="menu-note">Un fichier .txt par texte sauvé. Déplace ou renomme le dossier dans Drive : Rime le suit.</p>
+        </div>
+        <div id="driveOn" hidden>
+          <p class="menu-note" id="driveNote"></p>
+          <button class="menu-item" onclick="syncNow()">Synchroniser maintenant</button>
+          <button class="menu-item" onclick="renameDriveFolder()">Renommer le dossier…</button>
+          <button class="menu-item" onclick="disconnectDrive()">Arrêter la synchro</button>
+        </div>
+      </div>
+    </div>
+    <span class="doc-state" id="docState"></span>
+    <button class="drive-btn" id="driveBtn" hidden></button>
+  </div>
+  <div class="top-tools">
+    <div class="seg" role="group" aria-label="Surlignage du texte">
+      <button data-mode="all" aria-pressed="true" title="Rimes de fin et rimes internes">Tout</button>
+      <button data-mode="ends" aria-pressed="false" title="Rimes de fin seulement">Fins de vers</button>
+      <button data-mode="text" aria-pressed="false" title="Le texte sans surlignage, sans bande de flow">Texte seul</button>
+    </div>
+    <button class="tog" id="flowBtn" aria-pressed="true" title="Afficher ou masquer la bande de flow, une case par syllabe">Flow</button>
+    <button class="tog" id="vowBtn" aria-pressed="false" title="Colorer chaque syllabe de la bande par sa voyelle">Voyelles</button>
+    <button class="tog" id="stanzaBtn" aria-pressed="false" title="Rimes de strophe : dans chaque strophe, un mot accentué qui rime avec une fin de vers prend sa couleur, à n'importe quelle distance. Les petits mots sans accent (j'ai, les, c'est…) restent hors jeu.">Strophe</button>
+    <button class="tog tog-icon" id="versionsBtn" aria-pressed="false">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7 M2.6 2.4v2.6h2.6 M8 5v3.2l2.1 1.3"/></svg><span class="lbl">Versions</span>
     </button>
-    <div class="menu doc-menu" id="docMenu" hidden>
-      <button class="menu-item" onclick="saveDoc()">Sauver <kbd>Ctrl+S</kbd></button>
-      <button class="menu-item" onclick="newDoc()">Nouveau texte</button>
-      <div class="menu-label">Textes sauvés</div>
-      <div id="docList"></div>
-      <div class="menu-sep"></div>
-      <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
-      <label class="menu-check"><input type="checkbox" id="exportHistory" checked> avec l'historique des versions</label>
-      <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
-      <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
-      <div class="menu-label">Google Drive</div>
-      <div id="driveOff">
-        <label class="menu-field">Nom du dossier dans ton Drive
-          <input type="text" id="driveFolderName" placeholder="Rime" maxlength="100" autocomplete="off">
-        </label>
-        <button class="menu-item" onclick="connectDrive()">Synchroniser avec Google Drive</button>
-        <p class="menu-note">Un fichier .txt par texte sauvé. Déplace ou renomme le dossier dans Drive : Rime le suit.</p>
-      </div>
-      <div id="driveOn" hidden>
-        <p class="menu-note" id="driveNote"></p>
-        <button class="menu-item" onclick="syncNow()">Synchroniser maintenant</button>
-        <button class="menu-item" onclick="renameDriveFolder()">Renommer le dossier…</button>
-        <button class="menu-item" onclick="disconnectDrive()">Arrêter la synchro</button>
+    <div class="menu-wrap">
+      <button class="tog tog-icon" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu" title="Télécharger, partager, rapport d'analyse">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M8 10V2.8 M5.4 5.3 8 2.7l2.6 2.6 M3 9v4h10V9"/></svg><span class="lbl">Exporter</span>
+      </button>
+      <div class="menu menu-right" id="exportMenu" hidden>
+        <button class="menu-item" onclick="downloadText()">Télécharger le texte <kbd>.txt</kbd></button>
+        <button class="menu-item" id="shareItem" onclick="shareText()" title="Vers Notes, Mail, Drive… selon l'appareil">Partager…</button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" onclick="copyReport()">Copier le rapport d'analyse</button>
+        <button class="menu-item" onclick="downloadReport()">Télécharger le rapport <kbd>.txt</kbd></button>
       </div>
     </div>
+    <button class="icon-btn" id="railBtn" aria-pressed="true" aria-label="Panneau d'analyse" title="Afficher ou masquer le panneau d'analyse">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" class="stroke"><path d="M2.5 3.5h13v11h-13Z M11.5 3.5v11"/></svg>
+    </button>
   </div>
-  <span class="doc-state" id="docState"></span>
-  <button class="drive-btn" id="driveBtn" hidden></button>
-  <div class="spacer"></div>
-  <div class="seg" role="group" aria-label="Surlignage du texte">
-    <button data-mode="all" aria-pressed="true" title="Rimes de fin et rimes internes">Tout</button>
-    <button data-mode="ends" aria-pressed="false" title="Rimes de fin seulement">Fins de vers</button>
-    <button data-mode="text" aria-pressed="false" title="Le texte sans surlignage, sans bande de flow">Texte seul</button>
-  </div>
-  <button class="tog" id="flowBtn" aria-pressed="true" title="Afficher ou masquer la bande de flow, une case par syllabe">Flow</button>
-  <button class="tog" id="vowBtn" aria-pressed="false" title="Colorer chaque syllabe de la bande par sa voyelle">Voyelles</button>
-  <button class="tog tog-icon" id="versionsBtn" aria-pressed="false">
-    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7 M2.6 2.4v2.6h2.6 M8 5v3.2l2.1 1.3"/></svg>Versions
-  </button>
-  <div class="menu-wrap">
-    <button class="tog" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu">Exporter</button>
-    <div class="menu menu-right" id="exportMenu" hidden>
-      <button class="menu-item" onclick="downloadText()">Télécharger le texte <kbd>.txt</kbd></button>
-      <button class="menu-item" id="shareItem" onclick="shareText()" title="Vers Notes, Mail, Drive… selon l'appareil">Partager…</button>
-      <div class="menu-sep"></div>
-      <button class="menu-item" onclick="copyReport()">Copier le rapport d'analyse</button>
-      <button class="menu-item" onclick="downloadReport()">Télécharger le rapport <kbd>.txt</kbd></button>
-    </div>
-  </div>
-  <button class="icon-btn" id="railBtn" aria-pressed="true" aria-label="Panneau d'analyse" title="Afficher ou masquer le panneau d'analyse">
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" class="stroke"><path d="M2.5 3.5h13v11h-13Z M11.5 3.5v11"/></svg>
-  </button>
 </header>
 
 <div class="body">
+  <!-- Panneau Textes : dossiers et textes sauvés, filtre par tags -->
+  <aside class="lib" id="lib" aria-label="Textes">
+    <div class="lib-head">
+      <h2>Textes</h2>
+      <button class="icon-sm" id="libNewText" aria-label="Nouveau texte" title="Nouveau texte, dans le dossier du texte ouvert">
+        <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M4 2.5h5l3 3v8H4Z M9 2.5v3h3 M8 7.5v4 M6 9.5h4"/></svg>
+      </button>
+      <button class="icon-sm" id="libNewFolder" aria-label="Nouveau dossier" title="Nouveau dossier ; avec Google Drive, un sous-dossier de ton dossier Rime">
+        <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 12.5V3.8h3.8l1.4 1.6h5.8v7.1Z M8 7v4 M6 9h4"/></svg>
+      </button>
+    </div>
+    <form class="lib-create" id="libCreate" hidden>
+      <label for="libFolderName">Nom du nouveau dossier</label>
+      <input type="text" id="libFolderName" maxlength="80" placeholder="Par exemple : Album 01" autocomplete="off">
+      <div class="lib-create-btns">
+        <button type="submit" class="btn-sm solid">Créer</button>
+        <button type="button" class="btn-sm" id="libCreateCancel">Annuler</button>
+      </div>
+    </form>
+    <nav class="lib-tree" id="libTree" aria-label="Dossiers et textes"></nav>
+    <div class="lib-foot">
+      <div class="lib-filter-head"><span>Filtrer par tag</span><button class="link-btn" id="libClear" hidden>Effacer</button></div>
+      <div class="tags" id="libTags" role="group" aria-label="Filtrer par tag"></div>
+      <p class="lib-summary" id="libSummary"></p>
+    </div>
+  </aside>
+
   <main class="editor" id="editor" aria-label="Paroles" data-mode="all" data-zoom="vow">
     <div class="ed-head">
       <span></span>
@@ -146,6 +182,79 @@
   </aside>
 
   <aside class="rail" id="rail" aria-label="Analyse">
+    <!-- Ce texte : son dossier, ses tags, sa place dans Drive -->
+    <section class="rs meta" id="metaSection">
+      <h2>Ce texte</h2>
+      <div class="meta-field">
+        <span class="meta-label">Dossier</span>
+        <button class="meta-folder" id="metaFolderBtn" aria-expanded="false" aria-label="Dossier du texte : changer"></button>
+        <div class="meta-pick" id="metaFolderPick" hidden></div>
+      </div>
+      <div class="meta-field">
+        <span class="meta-label">Tags</span>
+        <div class="tags" id="metaTags"></div>
+        <label for="metaTagInput" class="vh">Ajouter un tag à ce texte</label>
+        <input type="text" id="metaTagInput" class="meta-input" placeholder="Ajouter un tag, puis Entrée" maxlength="30" autocomplete="off">
+        <div class="tags" id="metaTagSugg"></div>
+      </div>
+      <p class="meta-drive" id="metaDrive" hidden></p>
+    </section>
+
+    <!-- Prod : le lecteur YouTube ; il reste collé en haut du panneau pendant la lecture -->
+    <div class="prod-dock" id="prodDock" hidden>
+      <div class="prod-head">
+        <h2>Prod</h2>
+        <span class="prod-bpm" id="prodBpm"></span>
+        <span class="spacer"></span>
+        <kbd title="Lecture et pause, même pendant que tu écris">Ctrl+Espace</kbd>
+        <button class="icon-sm" id="prodFold" aria-expanded="true"></button>
+      </div>
+      <div id="prodOpen">
+        <div class="prod-screen"><div id="prodPlayer"></div></div>
+        <div class="prod-ctl">
+          <button class="prod-play" id="prodPlay" aria-label="Lecture"></button>
+          <span class="prod-time" id="prodTime">0:00 / 0:00</span>
+          <label for="prodPos" class="vh">Position dans la prod</label>
+          <input type="range" id="prodPos" min="0" max="0" step="1" value="0">
+          <button class="prod-loop" id="prodLoop" aria-pressed="true" aria-label="Boucle">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.8 7V6.2a2 2 0 0 1 2-2h7.4 M10.4 2.4l1.8 1.8-1.8 1.8 M13.2 9v.8a2 2 0 0 1-2 2H3.8 M5.6 13.6l-1.8-1.8 1.8-1.8"/></svg>
+          </button>
+        </div>
+        <div class="prod-tempo">
+          <div class="prod-bpm-field">
+            <label for="prodBpmInput">BPM</label>
+            <input type="number" id="prodBpmInput" min="40" max="240" step="1" placeholder="—">
+          </div>
+          <button class="prod-tap" id="prodTap" title="Clique sur chaque temps, au moins 4 fois">Tap</button>
+          <p class="prod-hint" id="prodTapHint" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="prod-folded" id="prodFolded" hidden>
+        <button class="prod-play" id="prodUnfold" aria-label="Déplier le lecteur et lire"></button>
+        <div class="prod-folded-text"><span id="prodFoldedTitle"></span><span id="prodFoldedNote"></span></div>
+      </div>
+    </div>
+    <section class="rs" id="prodSection">
+      <div class="rs-head"><h2 id="prodListTitle">Prod</h2><span class="rs-count" id="prodCount"></span></div>
+      <div class="prod-list" id="prodList" role="radiogroup" aria-label="Prod active"></div>
+      <div class="prod-undo" id="prodUndo" hidden><span id="prodUndoText"></span><button class="link-btn" id="prodUndoBtn">Annuler</button></div>
+      <label class="search-label" for="prodUrl">Ajouter une prod</label>
+      <div class="search">
+        <input type="url" id="prodUrl" inputmode="url" placeholder="Lien YouTube" autocomplete="off" spellcheck="false">
+        <button class="btn-sm" id="prodPaste" title="Coller le lien copié">Coller</button>
+      </div>
+      <p class="prod-note" id="prodNote" aria-live="polite"></p>
+      <div class="prod-found" id="prodFound" hidden>
+        <span class="prod-found-label">Titre trouvé</span>
+        <span class="prod-found-title" id="prodFoundTitle"></span>
+        <span class="prod-found-url" id="prodFoundUrl"></span>
+        <div class="prod-found-btns">
+          <button class="btn-sm solid" id="prodAdd">Ajouter au texte</button>
+          <button class="btn-sm" id="prodCancel">Annuler</button>
+        </div>
+      </div>
+    </section>
+
     <section class="rs">
       <h2>Schéma</h2>
       <div class="scheme" id="scheme"></div>
@@ -194,11 +303,12 @@
   <span id="statIgnored"></span>
   <span id="statSyl"></span>
   <span id="statInt"></span>
+  <span class="foot-prod" id="footProd" hidden></span>
   <span class="foot-status" id="status">phonétique Lexique 3.83</span>
 </footer>
 
 <div class="tip" id="tip" role="tooltip" hidden></div>
 
-<script src="script.js?v=5"></script>
+<script src="script.js?v=7"></script>
 </body>
 </html>

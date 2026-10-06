@@ -43,12 +43,19 @@ function store(key, value) {
 
 // Sur petit écran, bande et panneau sont masqués d'abord : le texte garde la place
 const wide = window.innerWidth > 760;
-const prefs = { mode: 'all', flow: wide, vow: false, rail: wide, strip: null, ...stored('rime-prefs', {}) };
+// stanza : rimes de strophe ; lib : panneau Textes ; libOpen : dossiers repliés (false) ; prodLoop : boucle des prods
+// Le panneau Textes s'ouvre d'office sur un grand écran seulement : avec les deux panneaux, l'éditeur a besoin de place
+const prefs = { mode: 'all', flow: wide, vow: false, rail: wide, strip: null, stanza: false, lib: window.innerWidth >= 1280, libOpen: {}, prodLoop: true, ...stored('rime-prefs', {}) };
 const savePrefs = () => store('rime-prefs', prefs);
 
-// Textes sauvés : { id, text, updated } (updated en ms ; les anciennes entrées n'avaient que leur id)
-let docs = stored('rime-history', []).map(d => ({ id: d.id, text: d.text, updated: d.updated ?? d.id }));
-const doc = { id: null, text: '', ...stored('rime-current', {}) };   // texte ouvert, même non sauvé
+// Textes sauvés : { id, text, updated, folder, tags, prods, prod, drive, pending, metaPending, conflict }
+// (updated en ms ; les anciennes entrées n'avaient que leur id). Tous les champs sont gardés au chargement.
+let docs = stored('rime-history', []).map(d => ({ ...d, updated: d.updated ?? d.id }));
+// Texte ouvert, même non sauvé ; pas encore sauvé, il porte lui-même son dossier, ses tags et ses prods
+const doc = { id: null, text: '', folder: null, tags: [], prods: [], prod: null, ...stored('rime-current', {}) };
+// Dossiers : { id, name, drive, pending } ; un texte est dans un dossier ou dans aucun
+let folders = stored('rime-folders', []);
+const saveFolders = () => store('rime-folders', folders);
 
 // ── API ──
 const API_BASE = '/api';
@@ -75,7 +82,7 @@ async function fetchAnalysis(lines) {
   const res = await fetch(`${API_BASE}/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lines }),
+    body: JSON.stringify({ lines, stanza: !!prefs.stanza }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -161,7 +168,7 @@ function internalTitle(it, v) {
   const [pv, pw] = it.with;
   const where = pv === v ? 'même vers' : `vers ${pv + 1}`;
   const quality = it.k >= 3 ? 'riche' : it.k === 2 ? 'suffisante' : it.v >= 2 ? `${it.v} voyelles en commun` : 'pauvre';
-  return `Rime interne ${g.members ? 'famille ' : ''}${g.label} avec « ${spokenWord(pv, pw)} » (${where}) · ${quality}${it.exact ? '' : ' ≈'}`;
+  return `Rime interne ${g.members ? 'famille ' : ''}${g.label} avec « ${spokenWord(pv, pw)} » (${where}) · ${quality}${it.exact ? '' : ' ≈'}${it.echo ? ' · rime de strophe' : ''}`;
 }
 
 function internalSummary(l, v) {
@@ -573,13 +580,13 @@ function verseLinks(l, v) {
   l.internal.forEach(it => {
     const [pv, pw] = it.with;
     out.push(link(groups[it.group], groups[it.group].label,
-      `${spokenWord(v, it.i)} rime avec ${spokenWord(pv, pw)}${pv === v ? ' dans le même vers' : ` (v.${pv + 1})`}`));
+      `${spokenWord(v, it.i)} rime avec ${spokenWord(pv, pw)}${pv === v ? ' dans le même vers' : ` (v.${pv + 1})`}`, it.echo));
   });
   return out.join('') || note(l.end === null ? 'Pas de voyelle : pas de rime possible.' : 'Pas de rime détectée pour ce vers.');
 }
 
-const link = (g, mark, text) =>
-  `<p class="link"><span class="link-mark ${kc(g.ci)}${g.members ? ' f' : ''}" data-k="${escHtml(g.key)}">${escHtml(mark)}</span> ${escHtml(text)}</p>`;
+const link = (g, mark, text, echo = false) =>
+  `<p class="link"><span class="link-mark ${kc(g.ci)}${g.members ? ' f' : ''}" data-k="${escHtml(g.key)}">${escHtml(mark)}</span> ${escHtml(text)}${echo ? ' <span class="link-tag" data-tip="Rime de strophe : reliée à une fin de vers de la strophe, à toute distance">strophe</span>' : ''}</p>`;
 
 // Rimes proposées pour le mot visé ; shownKey : le mot pour lequel les pastilles affichées ont été calculées
 let sugKey = null, shownKey = null, sugSeq = 0, sugTimer = null;
@@ -743,8 +750,9 @@ function renderCounts() {
 function renderStats() {
   const info = lastResult?.info || [];
   const internal = info.reduce((a, l) => a + l.internal.length, 0);
+  const echoes = info.reduce((a, l) => a + l.internal.filter(it => it.echo).length, 0);
   $('statSyl').textContent = info.length ? `${Math.round(info.reduce((a, l) => a + l.syl, 0) / info.length)} syllabes en moyenne` : '';
-  $('statInt').textContent = info.length ? `${internal} rime${internal > 1 ? 's' : ''} interne${internal > 1 ? 's' : ''}` : '';
+  $('statInt').textContent = info.length ? `${internal} rime${internal > 1 ? 's' : ''} interne${internal > 1 ? 's' : ''}${echoes ? `, dont ${echoes} de strophe` : ''}` : '';
 }
 
 function renderLegend() {
@@ -766,8 +774,11 @@ function applyPrefs() {
   $('flowBtn').setAttribute('aria-pressed', prefs.flow);
   $('vowBtn').setAttribute('aria-pressed', prefs.vow && flowShown());
   $('vowBtn').disabled = !flowShown();
+  $('stanzaBtn').setAttribute('aria-pressed', !!prefs.stanza);
   document.querySelector('.body').classList.toggle('no-rail', !prefs.rail);
+  document.querySelector('.body').classList.toggle('with-lib', !!prefs.lib);
   $('railBtn').setAttribute('aria-pressed', prefs.rail);
+  $('libBtn').setAttribute('aria-pressed', !!prefs.lib);
   renderLegend();
 }
 
@@ -787,7 +798,27 @@ document.querySelectorAll('.seg [data-mode]').forEach(b => b.addEventListener('c
 }));
 $('flowBtn').addEventListener('click', () => { prefs.flow = !prefs.flow; prefsChanged(); });
 $('vowBtn').addEventListener('click', () => { prefs.vow = !prefs.vow; prefsChanged(); });
-$('railBtn').addEventListener('click', () => { prefs.rail = !prefs.rail; prefsChanged(); });
+// Sur mobile, les deux panneaux passent par-dessus l'éditeur : un seul à la fois
+const narrow = () => window.innerWidth <= 760;
+$('railBtn').addEventListener('click', () => {
+  prefs.rail = !prefs.rail;
+  if (prefs.rail && narrow()) prefs.lib = false;
+  if (!prefs.rail) pauseProd('rail');   // le lecteur part avec le panneau : la lecture se met en pause
+  prefsChanged();
+});
+$('libBtn').addEventListener('click', () => {
+  prefs.lib = !prefs.lib;
+  if (prefs.lib && narrow()) { prefs.rail = false; pauseProd('rail'); }
+  prefsChanged();
+  if (prefs.lib) renderLib();
+});
+// Rimes de strophe : l'analyse change, elle est relancée
+$('stanzaBtn').addEventListener('click', () => {
+  prefs.stanza = !prefs.stanza;
+  prefsChanged();
+  lastRequested = null;
+  if (ta.value.trim()) analyze();
+});
 
 // ── Menus ──
 function toggleMenu(btn) {
@@ -795,10 +826,7 @@ function toggleMenu(btn) {
   const open = menu.hidden;
   closeMenus();
   if (!open) return;
-  if (menu.id === 'docMenu') {
-    renderDocList();
-    loadGis().catch(() => {});   // prêt avant le clic : la fenêtre Google doit s'ouvrir dans le clic même
-  }
+  if (menu.id === 'docMenu') loadGis().catch(() => {});   // prêt avant le clic : la fenêtre Google doit s'ouvrir dans le clic même
   menu.hidden = false;
   btn.setAttribute('aria-expanded', 'true');
 }
@@ -826,23 +854,31 @@ function renderDocState() {
   document.title = title ? `${title} — Rime` : 'Rime — Analyse de schémas de rimes';
 }
 
-function renderDocList() {
-  $('docList').innerHTML = docs.map(d => `
-    <div class="doc-item${d.id === doc.id ? ' current' : ''}">
-      <button class="doc-open" onclick="openDoc(${d.id})">
-        <span class="doc-name">${escHtml(docTitle(d.text) || 'Sans titre')}${d.conflict ? ' <span class="doc-conflict">(conflit)</span>' : ''}</span>
-        <span class="doc-meta">${new Date(d.updated).toLocaleDateString('fr')} · ${d.text.split('\n').filter(l => rowType(l) === 'verse').length} vers</span>
-      </button>
-      <button class="doc-del" onclick="deleteDoc(${d.id})" aria-label="Supprimer ce texte">×</button>
-    </div>`).join('') || '<p class="menu-empty">Aucun texte sauvé pour l\'instant.</p>';
+// ── Métadonnées du texte ouvert : dossier, tags, prods ──
+// Elles vivent sur son entrée sauvée, ou sur le brouillon tant qu'il n'est pas sauvé, et s'appliquent
+// sans « Sauver ». Sur un texte sauvé, metaPending les fait partir vers Drive sans renvoyer le contenu.
+const cur = () => docs.find(d => d.id === doc.id) || doc;
+const draftMeta = d => ({ folder: d.folder ?? null, tags: [...(d.tags || [])], prods: (d.prods || []).map(p => ({ ...p })), prod: d.prod ?? null });
+
+function metaChanged(target = cur()) {
+  if (target === doc) persistDraft();
+  else {
+    target.metaPending = true;
+    store('rime-history', docs);
+    requestSync();
+  }
+  renderLib();
+  renderMeta();
+  renderProd();
 }
 
 function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
-  // pending : à envoyer sur Drive ; une copie « (conflit) » sauvée devient un texte ordinaire
+  // pending : à envoyer sur Drive ; une copie « (conflit) » sauvée devient un texte ordinaire.
+  // Un nouveau texte emporte le dossier, les tags et les prods du brouillon.
   const old = docs.find(d => d.id === doc.id);
-  const { conflict, ...prev } = old || { id: Date.now() };
+  const { conflict, ...prev } = old || { id: Date.now(), ...draftMeta(doc) };
   const item = { ...prev, text, updated: Date.now(), pending: true };
   // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
   const next = [item, ...docs.filter(d => d.id !== item.id)];
@@ -851,14 +887,21 @@ function saveDoc() {
   doc.id = item.id;
   persistDraft();
   renderDocState();
+  renderLib();
   toast('Texte enregistré ✓');
   addVersion(item.id, text, { before: old && { text: old.text, at: old.updated } });
-  requestSync();
+  saveToDrive();
 }
 
+// Un nouveau texte naît dans le dossier du texte ouvert
 function newDoc() {
   if (isDirty() && !confirm('Le texte en cours n\'est pas enregistré. Commencer un nouveau texte quand même ?')) return;
+  const folder = cur().folder ?? null;
   setText('', null);
+  doc.folder = folder;
+  persistDraft();
+  renderMeta();
+  renderLib();
   ta.focus();
 }
 
@@ -880,20 +923,28 @@ async function deleteDoc(id) {
   store('rime-history', docs);
   if (item.drive) { drive.trash.push(item.drive.id); saveDrive(); }
   await dropDocVersions(id);
-  if (doc.id === id) { doc.id = null; persistDraft(); closeVersions(); }
-  renderDocList();
+  // Le texte reste dans l'éditeur, comme un brouillon, avec son dossier, ses tags et ses prods
+  if (doc.id === id) { Object.assign(doc, { id: null }, draftMeta(item)); persistDraft(); closeVersions(); }
+  renderLib();
+  renderMeta();
   renderDocState();
   requestSync();
 }
 
 function setText(text, id) {
   closeVersions();
+  // Changer de texte arrête la prod en cours ; un nouveau texte part sans dossier, tags ni prods
+  if (id !== doc.id || !id) stopProd();
   doc.id = id;
+  if (!id) Object.assign(doc, draftMeta({}));
   ta.value = text;
   ta.setSelectionRange(0, 0);
   editor.scrollTop = 0;
   persistDraft();
   renderDocState();
+  renderLib();
+  renderMeta();
+  renderProd();
   analyzeSeq++;
   setResult(null);
   if (text.trim()) analyze();
@@ -902,7 +953,7 @@ function setText(text, id) {
 let draftTimer = null;
 function persistDraft() {
   clearTimeout(draftTimer);
-  store('rime-current', { id: doc.id, text: ta.value });
+  store('rime-current', { id: doc.id, text: ta.value, ...(doc.id ? {} : draftMeta(doc)) });
 }
 addEventListener('pagehide', persistDraft);
 
@@ -910,7 +961,11 @@ addEventListener('pagehide', persistDraft);
 async function exportAll() {
   if (!docs.length) { toast('Aucun texte sauvé à exporter'); return; }
   const now = new Date();
-  const backup = { app: 'rime', version: 2, exported: now.toISOString(), texts: docs.map(({ id, text, updated }) => ({ id, text, updated })) };
+  const backup = {
+    app: 'rime', version: 3, exported: now.toISOString(),
+    folders: folders.map(({ id, name }) => ({ id, name })),
+    texts: docs.map(({ id, text, updated, folder, tags, prods, prod }) => ({ id, text, updated, folder: folder ?? null, tags: tags || [], prods: prods || [], prod: prod ?? null })),
+  };
   if ($('exportHistory').checked) {
     const ids = new Set(docs.map(d => d.id));
     backup.versions = (await allVersions().catch(() => []))
@@ -923,7 +978,7 @@ async function exportAll() {
 // Importe des sauvegardes Rime (.json) et des paroles (.txt) dans les textes sauvés.
 // Rien n'est jamais écrasé : un texte déjà sauvé à l'identique est ignoré, un id déjà pris est remplacé.
 async function importFiles(files) {
-  const found = [], foundVersions = [], unreadable = [];
+  const found = [], foundVersions = [], foundFolders = [], unreadable = [];
   const norm = s => s.replace(/\r\n?/g, '\n');
   for (const f of files) {
     const raw = norm(await f.text());
@@ -932,6 +987,8 @@ async function importFiles(files) {
       const data = JSON.parse(raw);
       if (data?.app !== 'rime' || !Array.isArray(data.texts)) throw new Error();
       data.texts.forEach(t => { if (typeof t?.text === 'string') found.push({ ...t, text: norm(t.text) }); });
+      // Format 3 : dossiers, tags et prods
+      (Array.isArray(data.folders) ? data.folders : []).forEach(f => { if (f?.id && typeof f.name === 'string') foundFolders.push(f); });
       // Format 2 : l'historique des versions suit ses textes
       (Array.isArray(data.versions) ? data.versions : []).forEach(v => {
         if (typeof v?.text === 'string' && Number.isFinite(v.at)) foundVersions.push({ ...v, text: norm(v.text) });
@@ -942,6 +999,9 @@ async function importFiles(files) {
   }
   const texts = new Set(docs.map(d => d.text)), ids = new Set(docs.map(d => d.id));
   const idMap = new Map();   // id du texte dans la sauvegarde → id ici
+  // Dossiers de la sauvegarde : retrouvés ici par leur nom, sinon créés quand un texte importé y va
+  const folderNames = new Map(foundFolders.map(f => [f.id, f.name]));
+  const folderFor = fid => folderNames.has(fid) ? ensureFolder(folderNames.get(fid))?.id ?? null : null;
   let fresh = Date.now();
   const added = [];
   for (const t of found) {
@@ -951,7 +1011,12 @@ async function importFiles(files) {
     while (id === null || ids.has(id)) id = fresh++;
     ids.add(id);
     if (t.id !== undefined) idMap.set(t.id, id);
-    added.push({ id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now() });
+    const prods = (Array.isArray(t.prods) ? t.prods : []).filter(p => /^[\w-]{11}$/.test(p?.v)).map(p => ({ v: p.v, t: String(p.t || ''), bpm: validBpm(p.bpm) }));
+    added.push({
+      id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now(),
+      folder: folderFor(t.folder), tags: cleanTags(Array.isArray(t.tags) ? t.tags : []),
+      prods, prod: prods.some(p => p.v === t.prod) ? t.prod : prods[0]?.v ?? null,
+    });
   }
   const skipped = found.length - added.length;
   const note = [skipped && `${skipped} déjà présent${skipped > 1 ? 's' : ''} ou vide${skipped > 1 ? 's' : ''}`,
@@ -960,6 +1025,8 @@ async function importFiles(files) {
   const next = [...added, ...docs].sort((a, b) => b.updated - a.updated);
   if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
   docs = next;
+  saveFolders();
+  renderLib();
   // Historique : celui de la sauvegarde pour les textes importés, sinon une première version
   const known = new Set((await allVersions().catch(() => [])).map(v => v.id));
   const history = foundVersions.filter(v => idMap.has(v.docId)).map(v => ({
@@ -977,6 +1044,608 @@ async function importFiles(files) {
 $('importInput').addEventListener('change', async e => {
   await importFiles([...e.target.files]);
   e.target.value = '';
+});
+
+// ── Bibliothèque : dossiers et tags, dans le panneau Textes ──
+// menu : menu « … » ouvert ('f:<dossier>' ou 'd:<texte>') ; filter : tags demandés (un texte doit tous les porter)
+const libState = { menu: null, filter: new Set() };
+const ICONS = {
+  folder: 'M2.5 12.5V3.8h3.8l1.4 1.6h5.8v7.1Z',
+  none: 'M2.5 9h3l1 1.6h3l1-1.6h3 M2.5 9 4 3.5h8l1.5 5.5v3.5h-11Z',
+  doc: 'M4 2.5h5l3 3v8H4Z M9 2.5v3h3',
+  right: 'M6.5 4.5 10 8l-3.5 3.5',
+  down: 'M4.5 6.5 8 10l3.5-3.5',
+  up: 'M4.5 9.5 8 6l3.5 3.5',
+  more: 'M3.5 8h.01 M8 8h.01 M12.5 8h.01',
+  check: 'M3.5 8.5l3 3 6-7',
+  plus: 'M8 3.5v9 M3.5 8h9',
+  cross: 'M4.5 4.5l7 7 M11.5 4.5l-7 7',
+  trash: 'M3 4.5h10 M6.5 4.5V3h3v1.5 M4.5 4.5l.6 8.5h5.8l.6-8.5',
+  note: 'M6.2 11.6V3.6l6.6-1.4v8 M6.2 11.6a1.9 1.9 0 1 1-3.8 0a1.9 1.9 0 1 1 3.8 0Z M12.8 10.2a1.9 1.9 0 1 1-3.8 0a1.9 1.9 0 1 1 3.8 0Z',
+};
+const svgIcon = (d, size = 16, cls = 'stroke') => `<svg width="${size}" height="${size}" viewBox="0 0 16 16" aria-hidden="true" class="${cls}"><path d="${d}"/></svg>`;
+
+// Comparaison sans casse ni accents : « A finir » rejoint « à finir »
+const foldKey = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+const folderById = id => id ? folders.find(f => f.id === id) : undefined;
+const folderName = id => folderById(id)?.name ?? 'Sans dossier';
+const sortedFolders = () => [...folders].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+const newFolderId = () => `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const cleanName = s => String(s ?? '').trim().replace(/\s+/g, ' ').slice(0, 80);
+const verseCount = text => text.split('\n').filter(l => rowType(l) === 'verse').length;
+
+function createFolder(name) {
+  const clean = cleanName(name);
+  if (!clean) return null;
+  if (folders.some(f => foldKey(f.name) === foldKey(clean))) { toast(`Le dossier « ${clean} » existe déjà`); return null; }
+  const f = { id: newFolderId(), name: clean, pending: true };
+  folders.push(f);
+  saveFolders();
+  prefs.libOpen[f.id] = true;
+  savePrefs();
+  requestSync();
+  renderLib();
+  renderMeta();
+  return f;
+}
+
+// Le dossier de ce nom (casse et accents mis à part), créé au besoin : pour l'import
+function ensureFolder(name) {
+  const clean = cleanName(name);
+  if (!clean) return null;
+  return folders.find(f => foldKey(f.name) === foldKey(clean)) || createFolder(clean);
+}
+
+function renameFolder(id) {
+  const f = folderById(id);
+  if (!f) return;
+  const name = cleanName(prompt('Nouveau nom du dossier', f.name));
+  if (!name || name === f.name) return;
+  if (folders.some(x => x !== f && foldKey(x.name) === foldKey(name))) { toast(`Le dossier « ${name} » existe déjà`); return; }
+  Object.assign(f, { name, pending: true });
+  saveFolders();
+  requestSync();
+  renderLib();
+  renderMeta();
+}
+
+// Ses textes passent dans « Sans dossier » ; dans Drive, le dossier vidé part à la corbeille en fin de synchro
+function deleteFolder(id) {
+  const f = folderById(id);
+  if (!f) return;
+  const inside = docs.filter(d => d.folder === id);
+  const n = inside.length;
+  if (!confirm(`Supprimer le dossier « ${f.name} » ?${n ? ` ${n > 1 ? `Ses ${n} textes passent` : 'Son texte passe'} dans « Sans dossier ».` : ''}${f.drive ? ' Dans Google Drive, le dossier vide part à la corbeille.' : ''}`)) return;
+  inside.forEach(d => { d.folder = null; d.metaPending = true; });
+  if (doc.folder === id) doc.folder = null;
+  folders = folders.filter(x => x !== f);
+  if (f.drive) { drive.trashFolders.push(f.drive); saveDrive(); }
+  saveFolders();
+  store('rime-history', docs);
+  persistDraft();
+  requestSync();
+  renderLib();
+  renderMeta();
+}
+
+function moveDoc(id, folderId) {
+  const d = docs.find(x => x.id === id);
+  if (!d || (folderById(d.folder) ? d.folder : null) === folderId) return;
+  d.folder = folderId;
+  if (folderId) { prefs.libOpen[folderId] = true; savePrefs(); }
+  metaChanged(d);
+  toast(`« ${docTitle(d.text) || 'Sans titre'} » rangé dans ${folderName(folderId)}`);
+}
+
+// Tags : sans virgule (la description Drive les sépare par des virgules), 30 caractères au plus,
+// et écrits comme le premier texte qui les porte
+function allTags() {
+  const seen = new Map();
+  [...docs, doc].forEach(d => (d.tags || []).forEach(t => { if (!seen.has(foldKey(t))) seen.set(foldKey(t), t); }));
+  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'fr'));
+}
+
+function cleanTag(raw) {
+  const t = String(raw ?? '').replace(/,/g, ' ').trim().replace(/\s+/g, ' ').slice(0, 30);
+  return t && (allTags().find(x => foldKey(x) === foldKey(t)) ?? t);
+}
+
+function cleanTags(list) {
+  const out = [];
+  list.forEach(x => { const t = cleanTag(x); if (t && !out.some(o => foldKey(o) === foldKey(t))) out.push(t); });
+  return out;
+}
+
+function renderLib() {
+  // Un tag qui n'existe plus quitte le filtre
+  const tags = allTags();
+  [...libState.filter].forEach(t => { if (!tags.includes(t)) libState.filter.delete(t); });
+  const filter = [...libState.filter];
+  const match = d => filter.every(t => (d.tags || []).some(x => foldKey(x) === foldKey(t)));
+  const title = d => docTitle(d.text) || 'Sans titre';
+  const groups = [...sortedFolders().map(f => ({ id: f.id, key: f.id, name: f.name, icon: ICONS.folder })),
+    { id: null, key: '', name: 'Sans dossier', icon: ICONS.none }];
+  let shown = 0;
+  const tree = groups.map(g => {
+    const all = docs.filter(d => (folderById(d.folder) ? d.folder : null) === g.id);
+    const list = all.filter(match).sort((a, b) => title(a).localeCompare(title(b), 'fr'));
+    shown += list.length;
+    if (filter.length && !list.length) return '';
+    if (!g.id && !all.length) return '';
+    const open = filter.length > 0 || prefs.libOpen[g.key] !== false;
+    const menu = g.id && libState.menu === `f:${g.id}`;
+    const head = `<div class="lf">
+        <button class="lf-row" data-toggle="${escHtml(g.key)}" aria-expanded="${open}">${svgIcon(open ? ICONS.down : ICONS.right, 14, 'stroke chev')}${svgIcon(g.icon)}<span class="lf-name">${escHtml(g.name)}</span><span class="lf-count">${filter.length ? `${list.length}/${all.length}` : all.length}</span></button>
+        ${g.id ? `<button class="more" data-fmenu="${escHtml(g.id)}" aria-expanded="${!!menu}" aria-label="Actions du dossier « ${escHtml(g.name)} »">${svgIcon(ICONS.more, 16, 'stroke dots')}</button>` : ''}
+      </div>`
+      + (menu ? `<div class="lib-menu"><button data-frename="${escHtml(g.id)}">Renommer…</button><button class="danger" data-fdelete="${escHtml(g.id)}">Supprimer le dossier…</button></div>` : '');
+    if (!open) return head;
+    return head + (list.map(docRow).join('') || `<p class="lib-empty">${g.id ? 'Vide. Range un texte ici avec « Déplacer vers ».' : ''}</p>`);
+  }).join('');
+  setHtml($('libTree'), tree || `<p class="lib-empty">${docs.length ? 'Aucun texte avec ces tags.' : 'Aucun texte sauvé pour l\'instant : Ctrl+S sauve le texte ouvert.'}</p>`);
+  setHtml($('libTags'), tags.map(t => `<button class="tag-chip" data-ftag="${escHtml(t)}" aria-pressed="${libState.filter.has(t)}">${escHtml(t)}</button>`).join('')
+    || '<span class="lib-none">Aucun tag pour l\'instant : ajoute-les dans « Ce texte ».</span>');
+  $('libClear').hidden = !filter.length;
+  $('libSummary').textContent = filter.length ? `${shown} sur ${docs.length} texte${docs.length > 1 ? 's' : ''} avec ${filter.join(' + ')}` : '';
+}
+
+function docRow(d) {
+  const on = d.id === doc.id;
+  const menu = libState.menu === `d:${d.id}`;
+  const title = docTitle(d.text) || 'Sans titre';
+  const n = verseCount(d.text);
+  const tip = `${title} · ${n} vers · modifié le ${FMT.day.format(d.updated)}${d.tags?.length ? ` · ${d.tags.join(', ')}` : ''}`;
+  const up = drive.on && (d.pending || d.metaPending || !d.drive);
+  const here = folderById(d.folder) ? d.folder : null;
+  const dests = [...sortedFolders(), { id: null, name: 'Sans dossier' }].map(f => {
+    const cur = (f.id ?? null) === here;
+    return `<button data-move="${d.id}" data-to="${escHtml(f.id ?? '')}"${cur ? ' disabled' : ''}>${svgIcon(f.id ? ICONS.folder : ICONS.none, 15)}<span>${escHtml(f.name)}</span>${cur ? '<span class="here">ici</span>' : ''}</button>`;
+  }).join('');
+  return `<div class="ld${on ? ' on' : ''}">
+      <button class="ld-open" data-open="${d.id}" aria-current="${on}" data-tip="${escHtml(tip)}">${svgIcon(ICONS.doc, 14)}<span class="ld-name">${escHtml(title)}${d.conflict ? ' <span class="doc-conflict">(conflit)</span>' : ''}</span>${up ? `<span class="ld-up" aria-label="À envoyer vers Google Drive">${svgIcon(CLOUD_UP, 14)}</span>` : ''}<span class="ld-n">${n}</span></button>
+      <button class="more" data-dmenu="${d.id}" aria-expanded="${menu}" aria-label="Actions de « ${escHtml(title)} »">${svgIcon(ICONS.more, 16, 'stroke dots')}</button>
+    </div>`
+    + (menu ? `<div class="lib-menu"><span class="lib-menu-label">Déplacer vers</span>${dests}<span class="lib-menu-sep"></span><button class="danger" data-ddelete="${d.id}">Supprimer le texte…</button></div>` : '');
+}
+
+$('lib').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || !$('libTree').contains(b) && !$('libTags').contains(b)) return;
+  const ds = b.dataset;
+  if (ds.toggle !== undefined) {
+    prefs.libOpen[ds.toggle] = prefs.libOpen[ds.toggle] === false;
+    savePrefs();
+    libState.menu = null;
+  } else if (ds.open) {
+    libState.menu = null;
+    if (narrow()) { prefs.lib = false; prefsChanged(); }   // sur mobile, le texte ouvert prend la place du panneau
+    openDoc(+ds.open);
+  }
+  else if (ds.fmenu) libState.menu = libState.menu === `f:${ds.fmenu}` ? null : `f:${ds.fmenu}`;
+  else if (ds.dmenu) libState.menu = libState.menu === `d:${ds.dmenu}` ? null : `d:${ds.dmenu}`;
+  else if (ds.move) { libState.menu = null; moveDoc(+ds.move, ds.to || null); }
+  else if (ds.ddelete) { libState.menu = null; deleteDoc(+ds.ddelete); }
+  else if (ds.frename) { libState.menu = null; renameFolder(ds.frename); }
+  else if (ds.fdelete) { libState.menu = null; deleteFolder(ds.fdelete); }
+  else if (ds.ftag) libState.filter.has(ds.ftag) ? libState.filter.delete(ds.ftag) : libState.filter.add(ds.ftag);
+  else return;
+  renderLib();
+});
+$('libClear').addEventListener('click', () => { libState.filter.clear(); renderLib(); });
+$('libNewText').addEventListener('click', () => { if (narrow()) { prefs.lib = false; prefsChanged(); } newDoc(); });
+$('libNewFolder').addEventListener('click', () => {
+  $('libCreate').hidden = false;
+  $('libFolderName').value = '';
+  $('libFolderName').focus();
+});
+$('libCreate').addEventListener('submit', e => {
+  e.preventDefault();
+  if (createFolder($('libFolderName').value)) $('libCreate').hidden = true;
+});
+$('libCreateCancel').addEventListener('click', () => { $('libCreate').hidden = true; });
+$('libFolderName').addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); $('libCreate').hidden = true; } });
+
+// ── « Ce texte » : dossier, tags et place dans Drive du texte ouvert ──
+let folderPick = false;
+
+function renderMeta() {
+  const d = cur();
+  const f = folderById(d.folder);
+  $('metaFolderBtn').innerHTML = `${svgIcon(f ? ICONS.folder : ICONS.none)}<span>${escHtml(f ? f.name : 'Sans dossier')}</span>${svgIcon(folderPick ? ICONS.up : ICONS.down, 14)}`;
+  $('metaFolderBtn').setAttribute('aria-expanded', folderPick);
+  $('metaFolderPick').hidden = !folderPick;
+  if (folderPick) {
+    setHtml($('metaFolderPick'), [...sortedFolders(), { id: null, name: 'Sans dossier' }].map(o => {
+      const on = (o.id ?? null) === (f ? f.id : null);
+      return `<button data-pick-folder="${escHtml(o.id ?? '')}" aria-pressed="${on}">${svgIcon(o.id ? ICONS.folder : ICONS.none, 15)}<span>${escHtml(o.name)}</span>${on ? svgIcon(ICONS.check, 14) : ''}</button>`;
+    }).join('') + `<button data-new-folder>${svgIcon(ICONS.plus, 15)}<span>Nouveau dossier…</span></button>`);
+  }
+  const tags = d.tags || [];
+  setHtml($('metaTags'), tags.map(t => `<span class="tag">${escHtml(t)}<button data-untag="${escHtml(t)}" aria-label="Retirer le tag « ${escHtml(t)} »">${svgIcon(ICONS.cross, 10, 'stroke thick')}</button></span>`).join('')
+    || '<span class="meta-none">Aucun tag pour l\'instant.</span>');
+  // Suggestions : les tags des autres textes, filtrés pendant la frappe
+  const raw = $('metaTagInput').value.trim(), q = foldKey(raw);
+  const known = allTags();
+  const sugg = known.filter(t => !tags.some(x => foldKey(x) === foldKey(t)) && (!q || foldKey(t).includes(q))).slice(0, 8);
+  const create = q && !known.some(t => foldKey(t) === q) ? `<button class="tag-sugg" data-addtag="${escHtml(raw)}">${svgIcon(ICONS.plus, 11, 'stroke thick')}Créer « ${escHtml(raw.slice(0, 30))} »</button>` : '';
+  setHtml($('metaTagSugg'), sugg.map(t => `<button class="tag-sugg" data-addtag="${escHtml(t)}">${svgIcon(ICONS.plus, 11, 'stroke thick')}${escHtml(t)}</button>`).join('') + create);
+  const where = $('metaDrive');
+  where.hidden = !drive.on;
+  if (drive.on) {
+    const up = !doc.id || d.pending || d.metaPending || !d.drive;
+    setHtml(where, `${svgIcon(up ? CLOUD_UP : CLOUD_OK)}<span>Dans Drive : ${escHtml(drive.folderName || 'Rime')}${f ? ` › ${escHtml(f.name)}` : ''}${!doc.id ? ' · sauve le texte pour l\'envoyer' : up ? ' · à envoyer' : ''}</span>`);
+  }
+}
+
+function setFolder(id) {
+  const d = cur();
+  if ((folderById(d.folder) ? d.folder : null) === id) return;
+  d.folder = id;
+  if (id) { prefs.libOpen[id] = true; savePrefs(); }
+  metaChanged(d);
+}
+
+function addTag(raw) {
+  const t = cleanTag(raw);
+  $('metaTagInput').value = '';
+  if (!t) { renderMeta(); return; }
+  const d = cur();
+  if (!(d.tags || []).some(x => foldKey(x) === foldKey(t))) d.tags = [...(d.tags || []), t];
+  metaChanged(d);
+}
+
+$('metaFolderBtn').addEventListener('click', () => { folderPick = !folderPick; renderMeta(); });
+$('metaFolderPick').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  folderPick = false;
+  if (b.dataset.newFolder !== undefined) {
+    const f = createFolder(prompt('Nom du nouveau dossier') || '');
+    if (f) setFolder(f.id); else renderMeta();
+  } else setFolder(b.dataset.pickFolder || null);
+  renderMeta();
+});
+$('metaTags').addEventListener('click', e => {
+  const b = e.target.closest('[data-untag]');
+  if (!b) return;
+  const d = cur();
+  d.tags = (d.tags || []).filter(t => t !== b.dataset.untag);
+  metaChanged(d);
+});
+$('metaTagSugg').addEventListener('click', e => { const b = e.target.closest('[data-addtag]'); if (b) addTag(b.dataset.addtag); });
+$('metaTagInput').addEventListener('input', renderMeta);
+$('metaTagInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); addTag(e.target.value); }
+  else if (e.key === 'Escape') { e.stopPropagation(); e.target.value = ''; renderMeta(); }
+});
+
+// ── Prods : liens YouTube et leur BPM, sur le texte ouvert ──
+// Le lecteur est l'API IFrame de YouTube, chargée seulement quand une prod sert. Une vidéo YouTube ne se
+// joue pas cachée : plier le lecteur, masquer le panneau ou passer en mode Versions met en pause.
+const YT_ID = /(?:youtu\.be\/|youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|embed\/|live\/|v\/))([\w-]{11})/;
+const youtubeId = url => String(url ?? '').match(YT_ID)?.[1] ?? null;
+const validBpm = n => { n = Math.round(Number(n)); return n >= 40 && n <= 240 ? n : null; };
+const mmss = s => { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const prodTitle = p => p.t || 'Vidéo YouTube';
+const prodName = p => prodTitle(p).split(' — ')[0];
+const bpmLabel = p => p.bpm ? `${p.bpm} BPM` : 'BPM ?';
+const activeProd = (d = cur()) => (d.prods || []).find(p => p.v === d.prod) || null;
+const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M5 3.2v9.6L12.8 8Z"/></svg>';
+const PAUSE_ICON = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke thick"><path d="M5.5 3.5v9 M10.5 3.5v9"/></svg>';
+
+// ready : lecteur prêt ; video : la vidéo chargée ; why : ce qui a mis en pause (fold, rail, versions) ;
+// taps : temps tapés ; removed : prod retirée, à annuler ; add : lien en cours d'ajout
+const ps = { ready: false, video: null, playing: false, t: 0, dur: 0, folded: false, why: '', taps: [], removed: null, add: null, clock: null, tapTimer: null, lookTimer: null, lookSeq: 0 };
+let ytLoading = null, ytPlayer = null;
+
+function loadYt() {
+  return ytLoading ||= new Promise((resolve, reject) => {
+    if (window.YT?.Player) { resolve(); return; }
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { prev?.(); resolve(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => { ytLoading = null; reject(new Error('YouTube injoignable')); };
+    document.head.appendChild(s);
+  });
+}
+
+// Le lecteur suit la prod active : créé à la première prod, puis rechargé (lancé si une lecture était en cours)
+async function syncPlayer() {
+  const p = activeProd();
+  if (!p) {
+    if (ps.video && ytPlayer && ps.ready) ytPlayer.stopVideo();
+    Object.assign(ps, { video: null, playing: false, t: 0, dur: 0 });
+    stopClock();
+    return;
+  }
+  if (ps.video === p.v) return;
+  ps.video = p.v;
+  Object.assign(ps, { t: 0, dur: 0 });
+  try { await loadYt(); } catch {
+    ps.video = null;
+    $('prodNote').textContent = 'Lecteur YouTube injoignable : vérifie la connexion.';
+    return;
+  }
+  if (ps.video !== p.v) return;   // une autre prod a été choisie entre-temps
+  if (!ytPlayer) {
+    ytPlayer = new YT.Player('prodPlayer', {
+      host: 'https://www.youtube-nocookie.com', width: '100%', height: '100%', videoId: p.v,
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+      events: {
+        onReady: () => { ps.ready = true; if (ytPlayer.getVideoData?.()?.video_id !== ps.video) cueProd(); renderProdState(); },
+        onStateChange: onPlayerState,
+      },
+    });
+  } else if (ps.ready) cueProd();
+}
+
+function cueProd() {
+  if (!ps.video) return;
+  if (ps.playing) ytPlayer.loadVideoById(ps.video);
+  else ytPlayer.cueVideoById(ps.video);
+}
+
+function onPlayerState(e) {
+  const S = YT.PlayerState;
+  if (e.data === S.ENDED && prefs.prodLoop !== false) { ytPlayer.seekTo(0, true); ytPlayer.playVideo(); return; }
+  ps.playing = e.data === S.PLAYING || e.data === S.BUFFERING;
+  ps.dur = ytPlayer.getDuration?.() || ps.dur;
+  if (ps.playing) { ps.why = ''; startClock(); } else stopClock();
+  // Titre absent (oEmbed refusé) : celui du lecteur
+  const p = activeProd(), data = ytPlayer.getVideoData?.();
+  if (p && !p.t && data?.title && data.video_id === p.v) { p.t = data.title; metaChanged(cur()); return; }
+  renderProd();
+}
+
+function startClock() {
+  if (ps.clock) return;
+  ps.clock = setInterval(() => {
+    ps.t = ytPlayer?.getCurrentTime?.() || 0;
+    ps.dur = ytPlayer?.getDuration?.() || ps.dur;
+    renderProdState();
+  }, 250);
+}
+
+function stopClock() {
+  clearInterval(ps.clock);
+  ps.clock = null;
+  if (ps.ready && ytPlayer?.getCurrentTime) ps.t = ytPlayer.getCurrentTime() || 0;
+}
+
+// Lecture et pause (Ctrl+Espace) : le lecteur doit être visible pour jouer
+function togglePlay() {
+  if (!activeProd() || !ytPlayer || !ps.ready) return;
+  if (ps.playing) { ytPlayer.pauseVideo(); return; }
+  if (!prefs.rail) { prefs.rail = true; prefsChanged(); }
+  if (vstate.open) closeVersions();
+  ps.folded = false;
+  ps.why = '';
+  renderProd();
+  ytPlayer.playVideo();
+}
+
+function pauseProd(why) {
+  if (ps.playing && ytPlayer && ps.ready) { ytPlayer.pauseVideo(); ps.why = why; }
+  renderProdState();
+}
+
+// Changer de texte : la lecture s'arrête, le lien en cours d'ajout et l'annulation sont oubliés
+function stopProd() {
+  if (ps.playing && ytPlayer && ps.ready) ytPlayer.pauseVideo();
+  Object.assign(ps, { playing: false, why: '', taps: [], removed: null, add: null });
+  stopClock();
+  $('prodUrl').value = '';
+}
+
+function renderProd() {
+  const d = cur(), prods = d.prods || [], p = activeProd(d), has = prods.length > 0;
+  $('prodDock').hidden = !has;
+  $('prodListTitle').textContent = has ? 'Prods du texte' : 'Prod';
+  $('prodCount').textContent = has ? `${prods.length} prod${prods.length > 1 ? 's' : ''}` : '';
+  $('prodBpm').textContent = p ? bpmLabel(p) : '';
+  $('prodOpen').hidden = ps.folded;
+  $('prodFolded').hidden = !ps.folded;
+  $('prodFold').setAttribute('aria-expanded', !ps.folded);
+  $('prodFold').setAttribute('aria-label', ps.folded ? 'Déplier le lecteur' : 'Replier le lecteur (met la lecture en pause)');
+  $('prodFold').dataset.tip = $('prodFold').getAttribute('aria-label');
+  $('prodFold').innerHTML = svgIcon(ps.folded ? ICONS.down : ICONS.up, 14);
+  $('prodFoldedTitle').textContent = p ? prodTitle(p) : '';
+  $('prodFoldedNote').textContent = ps.why === 'fold' ? 'Lecteur replié : lecture mise en pause.' : 'Lecteur replié. Déplie-le pour écouter.';
+  if (document.activeElement !== $('prodBpmInput')) $('prodBpmInput').value = p?.bpm ?? '';
+  $('prodBpmInput').disabled = $('prodTap').disabled = !p;
+  setHtml($('prodList'), prods.map(x => {
+    const on = x.v === d.prod;
+    return `<div class="pl${on ? ' on' : ''}">
+        <button class="pl-pick" role="radio" aria-checked="${on}" data-prod="${escHtml(x.v)}"><span class="pl-dot"></span><span class="pl-text"><span class="pl-title">${escHtml(prodTitle(x))}</span><span class="pl-meta">${x.bpm ? `${x.bpm} BPM` : 'BPM à régler'}${on ? (ps.playing ? ' · en lecture' : ' · active') : ''}</span></span></button>
+        <button class="more" data-unprod="${escHtml(x.v)}" aria-label="Retirer « ${escHtml(prodName(x))} » du texte" data-tip="Retirer du texte">${svgIcon(ICONS.trash, 15)}</button>
+      </div>`;
+  }).join(''));
+  $('prodUndo').hidden = !ps.removed;
+  if (ps.removed) $('prodUndoText').textContent = `« ${prodName(ps.removed.prod)} » retirée du texte.`;
+  renderProdAdd();
+  renderProdState();
+  renderTapHint();
+  syncPlayer();
+}
+
+function renderProdState() {
+  const p = activeProd();
+  const label = ps.playing ? 'Pause' : 'Lecture';
+  [$('prodPlay'), $('prodUnfold')].forEach(b => {
+    setHtml(b, ps.playing && b === $('prodPlay') ? PAUSE_ICON : PLAY_ICON);
+    b.disabled = !p || !ps.ready;
+  });
+  $('prodPlay').setAttribute('aria-label', label);
+  $('prodPlay').dataset.tip = `${label} (Ctrl+Espace)`;
+  $('prodTime').textContent = `${mmss(ps.t)} / ${ps.dur ? mmss(ps.dur) : '–:––'}`;
+  const pos = $('prodPos');
+  pos.max = Math.floor(ps.dur) || 0;
+  if (document.activeElement !== pos) pos.value = Math.floor(ps.t);
+  pos.disabled = !p || !ps.ready;
+  const loop = prefs.prodLoop !== false;
+  $('prodLoop').setAttribute('aria-pressed', loop);
+  $('prodLoop').dataset.tip = loop ? 'Boucle activée : la prod repart au début' : 'Boucle désactivée : la lecture s\'arrête à la fin';
+  $('prodDock').classList.toggle('playing', ps.playing);
+  // Pied : la prod active, son BPM, ce que fait le lecteur
+  const foot = $('footProd');
+  foot.hidden = !p;
+  if (!p) return;
+  const state = !prefs.rail ? (ps.why === 'rail' ? 'en pause : le lecteur est masqué avec le panneau' : 'lecteur masqué avec le panneau')
+    : ps.folded ? 'en pause, lecteur replié' : vstate.open ? 'en pause pendant les versions' : ps.playing ? `en lecture · ${mmss(ps.t)}` : 'en pause';
+  setHtml(foot, `${svgIcon(ICONS.note, 14)}<strong>${escHtml(prodName(p))} · ${bpmLabel(p)}</strong><span>${escHtml(state)}</span>${prefs.rail ? '' : '<button class="foot-btn" data-show-rail>Afficher le lecteur</button>'}`);
+}
+
+function renderProdAdd() {
+  const a = ps.add;
+  const notes = { loading: 'Lien collé. Recherche du titre…', invalid: 'Ce lien ne mène pas à une vidéo YouTube.', dup: 'Cette prod est déjà dans le texte.' };
+  $('prodNote').textContent = a ? notes[a.state] ?? '' : (cur().prods || []).length ? '' : 'Colle le lien d\'une vidéo YouTube : son titre se remplit tout seul.';
+  $('prodFound').hidden = a?.state !== 'found';
+  if (a?.state === 'found') {
+    $('prodFoundTitle').textContent = a.title || 'Vidéo YouTube';
+    $('prodFoundUrl').textContent = `youtu.be/${a.v}`;
+  }
+}
+
+// Tap : le BPM se calcule dès 4 temps, sur les 8 derniers ; une pause de 2 s recommence la série
+function renderTapHint() {
+  const p = activeProd(), n = ps.taps.length;
+  const idle = !n || performance.now() - ps.taps[n - 1] > 2000;
+  let hint = '';
+  if (p && !n) hint = p.bpm ? 'Saisis le BPM, ou clique Tap sur chaque temps.' : 'BPM à régler : saisis-le, ou clique Tap sur chaque temps.';
+  else if (p && n < 4) hint = idle ? 'Il faut 4 temps d\'affilée. Recommence.' : `Encore ${4 - n} temps…`;
+  else if (p) hint = idle ? `Tempo pris : ${p.bpm} BPM sur ${n} temps.` : `${p.bpm} BPM d'après ${n} temps. Continue pour affiner.`;
+  $('prodTapHint').textContent = hint;
+  $('prodTap').classList.toggle('on', !idle);
+}
+
+function setBpm(value) {
+  const d = cur(), p = activeProd(d);
+  if (!p) return;
+  const bpm = validBpm(value);
+  if (bpm === p.bpm) { renderProd(); return; }
+  p.bpm = bpm;
+  metaChanged(d);
+}
+
+function tapTempo() {
+  const now = performance.now(), n = ps.taps.length;
+  ps.taps = !n || now - ps.taps[n - 1] > 2000 ? [now] : [...ps.taps, now].slice(-8);
+  const k = ps.taps.length;
+  if (k >= 4) setBpm(60000 * (k - 1) / (now - ps.taps[0]));
+  renderTapHint();
+  clearTimeout(ps.tapTimer);
+  ps.tapTimer = setTimeout(renderTapHint, 2100);
+}
+
+// Lien collé : la vidéo, puis son titre par oEmbed (accepté depuis le navigateur)
+async function lookUpProd(url) {
+  const seq = ++ps.lookSeq, v = youtubeId(url);
+  if (!url) ps.add = null;
+  else if (!v) ps.add = { state: 'invalid' };
+  else if ((cur().prods || []).some(p => p.v === v)) ps.add = { state: 'dup', v };
+  else ps.add = { state: 'loading', v };
+  renderProdAdd();
+  if (ps.add?.state !== 'loading') return;
+  let title = '';
+  try {
+    const res = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${v}`)}`);
+    if (res.ok) title = String((await res.json()).title || '');
+  } catch {}
+  if (seq !== ps.lookSeq) return;
+  ps.add = { state: 'found', v, title };   // sans titre, le lecteur le donnera
+  renderProdAdd();
+}
+
+function addProd() {
+  const a = ps.add;
+  if (a?.state !== 'found') return;
+  const d = cur();
+  d.prods = [...(d.prods || []), { v: a.v, t: a.title, bpm: null }];
+  d.prod = a.v;
+  Object.assign(ps, { add: null, removed: null, folded: false, taps: [] });
+  $('prodUrl').value = '';
+  metaChanged(d);
+}
+
+function pickProd(v) {
+  const d = cur();
+  if (d.prod === v) return;
+  d.prod = v;
+  ps.taps = [];
+  metaChanged(d);
+}
+
+function removeProd(v) {
+  const d = cur(), prods = d.prods || [];
+  const index = prods.findIndex(p => p.v === v);
+  if (index < 0) return;
+  const wasActive = d.prod === v;
+  d.prods = prods.filter(p => p.v !== v);
+  if (wasActive) d.prod = d.prods[Math.min(index, d.prods.length - 1)]?.v ?? null;
+  ps.removed = { prod: prods[index], index, wasActive, docId: doc.id };
+  metaChanged(d);
+}
+
+function undoRemoveProd() {
+  const r = ps.removed, d = cur();
+  if (!r || r.docId !== doc.id) return;
+  const prods = [...(d.prods || [])];
+  prods.splice(r.index, 0, r.prod);
+  d.prods = prods;
+  if (r.wasActive || !d.prod) d.prod = r.prod.v;
+  ps.removed = null;
+  metaChanged(d);
+}
+
+$('prodPlay').addEventListener('click', togglePlay);
+$('prodUnfold').addEventListener('click', togglePlay);
+$('prodFold').addEventListener('click', () => {
+  ps.folded = !ps.folded;
+  if (ps.folded && ps.playing) { ytPlayer.pauseVideo(); ps.why = 'fold'; } else ps.why = '';
+  renderProd();
+});
+$('prodLoop').addEventListener('click', () => { prefs.prodLoop = prefs.prodLoop === false; savePrefs(); renderProdState(); });
+$('prodPos').addEventListener('input', e => {
+  ps.t = Number(e.target.value);
+  if (ps.ready) ytPlayer.seekTo(ps.t, true);
+  renderProdState();
+});
+$('prodBpmInput').addEventListener('change', e => setBpm(e.target.value));
+$('prodBpmInput').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+$('prodTap').addEventListener('click', tapTempo);
+$('prodList').addEventListener('click', e => {
+  const pick = e.target.closest('[data-prod]'), un = e.target.closest('[data-unprod]');
+  if (pick) pickProd(pick.dataset.prod);
+  else if (un) removeProd(un.dataset.unprod);
+});
+$('prodUndoBtn').addEventListener('click', undoRemoveProd);
+$('prodUrl').addEventListener('input', e => {
+  clearTimeout(ps.lookTimer);
+  ps.lookTimer = setTimeout(() => lookUpProd(e.target.value.trim()), 250);
+});
+$('prodUrl').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  if (ps.add?.state === 'found') addProd(); else lookUpProd(e.target.value.trim());
+});
+$('prodPaste').addEventListener('click', async () => {
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    $('prodUrl').value = text;
+    lookUpProd(text);
+  } catch {
+    $('prodUrl').focus();
+    toast('Colle le lien dans le champ (Ctrl+V)');
+  }
+});
+$('prodAdd').addEventListener('click', addProd);
+$('prodCancel').addEventListener('click', () => { ps.add = null; $('prodUrl').value = ''; renderProdAdd(); });
+$('footProd').addEventListener('click', e => {
+  if (!e.target.closest('[data-show-rail]')) return;
+  prefs.rail = true;
+  prefsChanged();
+  renderProdState();
 });
 
 // ── Versions : une copie complète du texte à chaque « Sauver », dans IndexedDB ──
@@ -1203,6 +1872,7 @@ async function openVersions() {
   hideTip();
   if (lockedPh) setLock(null);
   Object.assign(vstate, { open: true, sel: null, cmp: 'current' });
+  pauseProd('versions');
   vstate.checked.clear();
   vstate.unfolded.clear();
   document.querySelector('.body').classList.add('versions');
@@ -1248,6 +1918,7 @@ function renderVersions() {
 
 const CLOUD_OK = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M6.3 9.4l1.3 1.3 2.3-2.4';
 const CLOUD_UP = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 11V7.6 M6.6 9 8 7.6 9.4 9';
+const CLOUD_WARN = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 7.6v1.6 M8 10.9v.1';
 const STAR = '<svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>';
 
 function renderVersionList() {
@@ -1429,25 +2100,27 @@ $('cmpRows').addEventListener('click', e => {
 });
 
 // ── Google Drive : un .txt par texte sauvé, dans un dossier « Rime » ──
-// Accès limité aux fichiers créés par Rime (drive.file). Sans serveur, Google ne donne qu'un jeton
-// d'une heure : passé ce délai, un clic sur « Reconnecter Drive » rouvre la fenêtre Google.
+// Accès limité aux fichiers créés par Rime (drive.file). Sans serveur, Google ne donne qu'un jeton d'une heure,
+// gardé dans ce navigateur pour survivre à un rechargement. Passé ce délai, la sauvegarde suivante rouvre la
+// fenêtre Google, qui se referme seule si la session Google est ouverte.
 const GOOGLE_CLIENT_ID = '380243851119-hod3g0vlnqsgnkquhglen3ppsqi015or.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 // on : synchro activée ; folder, folderName : le dossier des textes (choisi par l'utilisateur, « Rime » par défaut) ;
 // wantedName : nom demandé, appliqué à la prochaine synchro ; trash : fichiers ou dossiers supprimés ici, à mettre à la corbeille ;
-// vroot : le dossier « Versions » ; vfolders : { id du texte : dossier de ses versions }
-const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], vroot: null, vfolders: {}, ...stored('rime-drive', {}) };
+// vroot : le dossier « Versions » ; vfolders : { id du texte : dossier de ses versions } ;
+// email : le compte Google, pour que la fenêtre Google le choisisse seule ;
+// trashFolders : dossiers de textes supprimés ici, mis à la corbeille de Drive une fois vides
+const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], trashFolders: [], vroot: null, vfolders: {}, ...stored('rime-drive', {}) };
 const FOLDER_TYPE = 'application/vnd.google-apps.folder';
 const saveDrive = () => store('rime-drive', drive);
 let driveToken = (() => {
-  try {
-    const t = JSON.parse(sessionStorage.getItem('rime-drive-token'));
-    return t?.exp > Date.now() ? t : null;
-  } catch { return null; }
+  const t = stored('rime-drive-token', null);
+  return t?.exp > Date.now() ? t : null;
 })();
 let driveStatus = { state: 'auth', at: null, error: '' };   // idle | sync | auth | error
 let syncing = null, syncAgain = false, syncTimer = null, lastSync = 0, tokenClient = null, gisLoading = null;
+let authDeclined = false;   // fenêtre Google fermée sans se connecter : la sauvegarde ne la rouvre plus d'elle-même
 
 // Script Google chargé seulement si Drive sert
 function loadGis() {
@@ -1477,16 +2150,24 @@ function connectDrive() {
     callback: resp => {
       if (resp.error || !oauth.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { toast('Accès à Google Drive refusé'); return; }
       driveToken = { value: resp.access_token, exp: Date.now() + (resp.expires_in - 60) * 1000 };
-      try { sessionStorage.setItem('rime-drive-token', JSON.stringify(driveToken)); } catch {}
+      store('rime-drive-token', driveToken);
+      authDeclined = false;
       if (!drive.on) { drive.on = true; saveDrive(); }
       syncDrive();
     },
     error_callback: e => {
       if (e.type === 'popup_failed_to_open') toast('Fenêtre Google bloquée : autorise les popups pour ce site');
-      else if (e.type !== 'popup_closed') toast('Connexion à Google impossible');
+      else if (e.type === 'popup_closed') authDeclined = true;
+      else toast('Connexion à Google impossible');
     },
   });
-  tokenClient.requestAccessToken({ prompt: drive.on ? '' : 'consent' });
+  tokenClient.requestAccessToken({ prompt: drive.on ? '' : 'consent', ...(drive.email && { login_hint: drive.email }) });
+}
+
+// Sauvegarde (clic ou Ctrl+S) avec un jeton expiré : on redemande l'accès dans ce geste même, sinon on synchronise
+function saveToDrive() {
+  if (drive.on && !hasToken() && !authDeclined && window.google?.accounts?.oauth2) connectDrive();
+  else requestSync();
 }
 
 const hasToken = () => driveToken?.exp > Date.now();
@@ -1496,11 +2177,13 @@ function disconnectDrive() {
   if (!confirm('Arrêter la synchro avec Google Drive ? Tes textes restent dans ton Drive et dans ce navigateur.')) return;
   if (driveToken) window.google?.accounts?.oauth2?.revoke(driveToken.value, () => {});
   dropDriveToken();
-  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [], vroot: null, vfolders: {} });
+  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [], trashFolders: [], vroot: null, vfolders: {}, email: undefined });
   saveDrive();
-  // Plus de lien : à la reconnexion, les fichiers sont retrouvés par l'id du texte ou de la version qu'ils portent
+  // Plus de lien : à la reconnexion, les fichiers et dossiers sont retrouvés par l'id qu'ils portent
   docs.forEach(d => { delete d.drive; });
   store('rime-history', docs);
+  folders.forEach(f => { delete f.drive; });
+  saveFolders();
   resetVersionLinks();
   renderDrive();
 }
@@ -1513,7 +2196,7 @@ async function resetVersionLinks() {
 
 function dropDriveToken() {
   driveToken = null;
-  try { sessionStorage.removeItem('rime-drive-token'); } catch {}
+  try { localStorage.removeItem('rime-drive-token'); } catch {}
 }
 
 const authError = () => Object.assign(new Error('Reconnexion à Google nécessaire'), { auth: true });
@@ -1547,11 +2230,12 @@ async function driveFolder() {
   if (!f || f.trashed) {
     // Dossier perdu (supprimé, autre compte) : les anciens liens ne valent plus, rien n'est effacé ici
     docs.forEach(d => { delete d.drive; });
-    Object.assign(drive, { trash: [], vroot: null, vfolders: {} });
+    folders.forEach(f => { delete f.drive; });
+    Object.assign(drive, { trash: [], trashFolders: [], vroot: null, vfolders: {} });
     await resetVersionLinks();
     // Le dossier principal porte la marque « root » ; un dossier d'avant les marques est le plus ancien sans marque
-    const folders = await driveFolders();
-    f = folders.find(x => x.appProperties?.rime === 'root') ?? folders.find(x => !x.appProperties?.rime && !x.appProperties?.rimeVersionsOf)
+    const found = await driveFolders();
+    f = found.find(x => x.appProperties?.rime === 'root') ?? found.find(x => !x.appProperties?.rime && !x.appProperties?.rimeVersionsOf)
       ?? await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: drive.wantedName || 'Rime', mimeType: FOLDER_TYPE, appProperties: { rime: 'root' } } });
   }
   if (f.appProperties?.rime !== 'root') await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { appProperties: { rime: 'root' } } });
@@ -1576,7 +2260,7 @@ async function driveList() {
   const files = [];
   let page = '';
   do {
-    const r = await driveApi(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,version,modifiedTime,appProperties)${page ? `&pageToken=${page}` : ''}`);
+    const r = await driveApi(`files?q=${q}&pageSize=1000&fields=nextPageToken,files(id,name,version,modifiedTime,appProperties,parents,description)${page ? `&pageToken=${page}` : ''}`);
     files.push(...(r?.files || []));
     page = r?.nextPageToken || '';
   } while (page);
@@ -1594,20 +2278,109 @@ async function renameDriveFolder() {
 const driveName = d => `${(docTitle(d.text) || 'Sans titre').slice(0, 80)}${d.conflict ? ' (conflit)' : ''}.txt`;
 const remoteTime = f => Date.parse(f.modifiedTime) || Date.now();
 
-// Envoie un texte : met à jour son fichier, ou en crée un qui porte l'id du texte
-async function drivePush(d, folder) {
-  const { id, text } = d;
-  const meta = { name: driveName(d) };
-  let f = d.drive && await driveApi(`files/${d.drive.id}?uploadType=multipart&fields=id,version`, { method: 'PATCH', upload: { meta, text } });
-  f ||= await driveApi('files?uploadType=multipart&fields=id,version', {
+// Tags et prods dans la description du fichier, lisible et modifiable dans Drive :
+//   Tags : à finir, storytelling
+//   Prod : Abyss — dark piano type beat · 92 BPM · https://youtu.be/xxxxxxxxxxx · active
+// Les autres lignes de la description sont gardées telles quelles (driveNote).
+function metaDescription(d) {
+  const out = [];
+  if (d.tags?.length) out.push(`Tags : ${d.tags.join(', ')}`);
+  (d.prods || []).forEach(p => out.push(`Prod : ${[prodTitle(p), p.bpm ? `${p.bpm} BPM` : '', `https://youtu.be/${p.v}`, p.v === d.prod ? 'active' : ''].filter(Boolean).join(' · ')}`));
+  if (d.driveNote) out.push(d.driveNote);
+  return out.join('\n');
+}
+
+const BPM_PART = /^\d{2,3}\s*bpm$/i;
+function parseDescription(text) {
+  const tags = [], prods = [], note = [];
+  let prod = null;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const tm = line.match(/^\s*tags?\s*:\s*(.*)$/i), pm = line.match(/^\s*prod\s*:\s*(.*)$/i);
+    if (tm) {
+      tm[1].split(',').forEach(raw => {
+        const t = raw.trim().replace(/\s+/g, ' ').slice(0, 30);
+        if (t && !tags.some(x => foldKey(x) === foldKey(t))) tags.push(t);
+      });
+    } else if (pm && youtubeId(pm[1])) {
+      const v = youtubeId(pm[1]);
+      if (prods.some(p => p.v === v)) continue;
+      const parts = pm[1].split(' · ').map(x => x.trim());
+      const title = parts.find(x => !youtubeId(x) && !BPM_PART.test(x) && !/^active$/i.test(x)) || '';
+      prods.push({ v, t: title === 'Vidéo YouTube' ? '' : title, bpm: validBpm(parts.find(x => BPM_PART.test(x))?.match(/\d+/)[0]) });
+      if (parts.some(x => /^active$/i.test(x))) prod = v;
+    } else if (line.trim()) note.push(line);
+  }
+  return { tags, prods, prod: prod ?? prods[0]?.v ?? null, driveNote: note.join('\n') };
+}
+
+const metaSig = d => JSON.stringify([d.folder ?? null, d.tags || [], d.prods || [], d.prod ?? null]);
+
+// Envoie un texte : son contenu s'il a changé (pending), sinon ses seules métadonnées (description, dossier).
+// Sans fichier, ou s'il a disparu, un fichier est créé, qui porte l'id du texte. parent : le dossier Drive voulu ;
+// le fichier n'est déplacé que si son dossier a changé ici (un fichier sorti du dossier de Rime y reste sinon).
+async function drivePush(d, parent, f = null) {
+  const { id, text, pending } = d;
+  const sig = metaSig(d);
+  const meta = { name: driveName(d), description: metaDescription(d) };
+  const was = f?.parents || [];
+  const move = d.metaPending && f && !was.includes(parent) ? `&addParents=${parent}${was.length ? `&removeParents=${was.join(',')}` : ''}` : '';
+  let r = d.drive && (pending
+    ? await driveApi(`files/${d.drive.id}?uploadType=multipart&fields=id,version${move}`, { method: 'PATCH', upload: { meta, text } })
+    : await driveApi(`files/${d.drive.id}?fields=id,version${move}`, { method: 'PATCH', json: meta }));
+  r ||= await driveApi('files?uploadType=multipart&fields=id,version', {
     method: 'POST',
-    upload: { meta: { ...meta, mimeType: 'text/plain', parents: [folder], appProperties: { rimeId: String(id) } }, text },
+    upload: { meta: { ...meta, mimeType: 'text/plain', parents: [parent], appProperties: { rimeId: String(id) } }, text },
   });
-  // Le texte a pu être sauvé ou supprimé pendant l'envoi : on le retrouve par son id
-  const cur = docs.find(x => x.id === id);
-  if (!cur) { drive.trash.push(f.id); return; }
-  cur.drive = { id: f.id, rev: f.version };
-  if (cur.text === text) cur.pending = false;
+  // Le texte a pu être sauvé, rangé ou supprimé pendant l'envoi : on le retrouve par son id
+  const now = docs.find(x => x.id === id);
+  if (!now) { drive.trash.push(r.id); return; }
+  now.drive = { id: r.id, rev: r.version };
+  if (now.text === text) now.pending = false;
+  if (metaSig(now) === sig) now.metaPending = false;
+}
+
+// Dossiers de textes : sous-dossiers du dossier de Rime, marqués rime: 'folder' et rimeFolder: <id>.
+// Rend la correspondance dossier Drive → dossier d'ici.
+async function syncFolders(root, all) {
+  const remote = all.filter(f => f.appProperties?.rime === 'folder');
+  const seen = new Set();
+  for (const lf of [...folders]) {
+    let f = remote.find(x => x.id === lf.drive) || remote.find(x => x.appProperties.rimeFolder === lf.id);
+    if (!f && lf.drive && !lf.pending) {
+      // Supprimé dans Drive (ses fichiers sont partis à la corbeille avec lui) : il disparaît ici aussi
+      folders = folders.filter(x => x !== lf);
+      docs.forEach(d => { if (d.folder === lf.id) d.folder = null; });
+      continue;
+    }
+    if (!f) {
+      f = await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: lf.name, mimeType: FOLDER_TYPE, parents: [root], appProperties: { rime: 'folder', rimeFolder: lf.id } } });
+    } else if (f.name !== lf.name) {
+      if (lf.pending) await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: lf.name } });
+      else lf.name = f.name;   // renommé dans Drive
+    }
+    Object.assign(lf, { drive: f.id, pending: false });
+    seen.add(f.id);
+  }
+  // Dossiers créés sur un autre appareil
+  for (const f of remote) {
+    if (seen.has(f.id) || drive.trashFolders.includes(f.id)) continue;
+    const id = f.appProperties.rimeFolder || newFolderId();
+    if (!folders.some(x => x.id === id)) folders.push({ id, name: f.name, drive: f.id });
+  }
+  saveFolders();
+  return new Map(folders.filter(f => f.drive).map(f => [f.drive, f.id]));
+}
+
+// Dossiers supprimés ici : à la corbeille de Drive, une fois vidés de leurs textes
+async function trashEmptyFolders() {
+  for (const id of [...drive.trashFolders]) {
+    const q = encodeURIComponent(`'${id}' in parents and trashed = false`);
+    const inside = (await driveApi(`files?q=${q}&pageSize=1&fields=files(id)`))?.files || [];
+    if (inside.length) continue;   // un texte y est encore (envoi en attente) : la prochaine synchro réessaiera
+    await driveApi(`files/${id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
+    drive.trashFolders = drive.trashFolders.filter(x => x !== id);
+    saveDrive();
+  }
 }
 
 function addDoc(fields) {
@@ -1620,38 +2393,51 @@ function addDoc(fields) {
 }
 
 async function runDriveSync() {
-  const folder = await driveFolder();
+  const root = await driveFolder();
   // 1. Les textes supprimés dans Rime vont à la corbeille de Drive (récupérables 30 jours)
   for (const id of [...drive.trash]) {
     await driveApi(`files/${id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
     drive.trash = drive.trash.filter(x => x !== id);
     saveDrive();
   }
+  // 2. Les dossiers, avant les textes qu'ils contiennent
+  const folderOf = await syncFolders(root, await driveFolders());
+  const parentOf = d => folderById(d.folder)?.drive || root;
+  // Dossier d'un fichier : la racine, un sous-dossier connu, sinon (parent hors de Rime) celui d'ici
+  const remoteFolder = (f, fallback) => {
+    const parents = f.parents || [];
+    if (parents.includes(root)) return null;
+    return parents.map(x => folderOf.get(x)).find(Boolean) ?? fallback;
+  };
+  // Dossier, tags et prods de Drive, sauf s'ils ont changé ici depuis
+  const pullMeta = (d, f) => {
+    if (!d.metaPending) Object.assign(d, parseDescription(f.description), { folder: remoteFolder(f, d.folder ?? null) });
+  };
   const files = await driveList();
   const remote = files.filter(f => !f.appProperties.rimeVersion);
   const byId = new Map(remote.map(f => [f.id, f]));
   const byRime = new Map(remote.map(f => [f.appProperties?.rimeId, f]));
   const seen = new Set();
-  // 2. Chaque texte sauvé face à son fichier
+  // 3. Chaque texte sauvé face à son fichier
   for (const id of docs.map(d => d.id)) {
     let d = docs.find(x => x.id === id);
     if (!d) continue;
     const f = (d.drive && byId.get(d.drive.id)) || byRime.get(String(id));
     if (!f) {
       // Fichier supprimé dans Drive : le texte suit, avec son historique, sauf s'il a des modifications à envoyer
-      if (d.drive && !d.pending) {
+      if (d.drive && !d.pending && !d.metaPending) {
         docs = docs.filter(x => x !== d);
         if (doc.id === id) { doc.id = null; persistDraft(); closeVersions(); }
         await dropDocVersions(id);
         continue;
       }
       delete d.drive;
-      await drivePush(d, folder);
+      await drivePush(d, parentOf(d));
       continue;
     }
     seen.add(f.id);
     if (d.drive?.id === f.id && d.drive.rev === f.version) {
-      if (d.pending) await drivePush(d, folder);
+      if (d.pending || d.metaPending) await drivePush(d, parentOf(d), f);
       continue;
     }
     // Modifié dans Drive (ou pas encore relié) : on compare les textes
@@ -1661,6 +2447,8 @@ async function runDriveSync() {
     if (text === d.text) {
       d.drive = { id: f.id, rev: f.version };
       d.pending = false;
+      pullMeta(d, f);
+      if (d.metaPending) await drivePush(d, parentOf(d), f);
       continue;
     }
     // Avant tout remplacement, la version d'ici est gardée dans l'historique
@@ -1670,30 +2458,34 @@ async function runDriveSync() {
     const editing = d.id === doc.id && isDirty();
     if (!d.pending && !editing) {
       Object.assign(d, { text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
+      pullMeta(d, f);
+      if (d.metaPending) await drivePush(d, parentOf(d), f);
       if (d.id === doc.id) {
         setText(text, d.id);
         toast(`« ${docTitle(text) || 'Sans titre'} » mis à jour depuis Drive`);
       }
       continue;
     }
-    if (!d.pending) continue;   // modifications non sauvées dans l'éditeur : on attend « Sauver »
+    if (!d.pending) { pullMeta(d, f); continue; }   // modifications non sauvées dans l'éditeur : on attend « Sauver »
     // Modifié des deux côtés : la version de Drive devient une copie « (conflit) », la nôtre part sur le fichier
     d.drive = { id: f.id, rev: f.version };
-    const copy = addDoc({ text, updated: remoteTime(f), conflict: true, pending: true });
+    const copy = addDoc({ text, updated: remoteTime(f), conflict: true, pending: true, ...parseDescription(f.description), folder: remoteFolder(f, d.folder ?? null) });
     await addVersion(copy.id, text, { source: 'drive', at: copy.updated });
-    await drivePush(d, folder);
+    await drivePush(d, parentOf(d), f);
   }
-  // 3. Les fichiers inconnus ici : textes sauvés depuis un autre appareil
+  // 4. Les fichiers inconnus ici : textes sauvés depuis un autre appareil
   for (const f of remote) {
     if (seen.has(f.id) || drive.trash.includes(f.id) || docs.some(d => d.drive?.id === f.id)) continue;
     const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
     if (docs.some(d => d.drive?.id === f.id)) continue;
-    addDoc({ id: Number(f.appProperties?.rimeId), text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
+    addDoc({ id: Number(f.appProperties?.rimeId), text, updated: remoteTime(f), drive: { id: f.id, rev: f.version }, ...parseDescription(f.description), folder: remoteFolder(f, null) });
   }
-  // 4. Les copies « (conflit) » créées plus haut
-  for (const d of docs.filter(x => !x.drive)) await drivePush(d, folder);
-  // 5. L'historique de chaque texte
-  await syncVersions(folder, files.filter(f => f.appProperties.rimeVersion));
+  // 5. Les copies « (conflit) » créées plus haut
+  for (const d of docs.filter(x => !x.drive)) await drivePush(d, parentOf(d));
+  // 6. Les dossiers supprimés ici, maintenant vidés
+  await trashEmptyFolders();
+  // 7. L'historique de chaque texte
+  await syncVersions(root, files.filter(f => f.appProperties.rimeVersion));
 }
 
 // ── Versions dans Drive : <dossier>/Versions/<titre>/<date heure — nom>.txt, une version = un fichier ──
@@ -1813,6 +2605,7 @@ async function syncOnce() {
   try {
     if (!hasToken()) throw authError();
     await runDriveSync();
+    drive.email ??= (await driveApi('about?fields=user(emailAddress)').catch(() => null))?.user?.emailAddress || '';
     lastSync = Date.now();
     setDriveStatus('idle');
   } catch (e) {
@@ -1822,7 +2615,9 @@ async function syncOnce() {
   store('rime-history', docs);
   saveDrive();
   renderDocState();
-  if (!$('docMenu').hidden) renderDocList();
+  renderLib();
+  renderMeta();
+  renderProd();
 }
 
 function requestSync(delay = 1500) {
@@ -1848,7 +2643,9 @@ function renderDrive() {
   }[state];
   const btn = $('driveBtn');
   btn.hidden = !drive.on;
-  btn.textContent = { idle: 'Drive à jour', sync: 'Synchro…', auth: 'Reconnecter Drive', error: 'Erreur Drive' }[state];
+  const label = { idle: 'Drive à jour', sync: 'Synchro…', auth: 'Reconnecter Drive', error: 'Erreur Drive' }[state];
+  const icon = { idle: CLOUD_OK, sync: CLOUD_UP }[state] || CLOUD_WARN;
+  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="${icon}"/></svg><span class="lbl">${label}</span>`;
   btn.classList.toggle('warn', state === 'auth' || state === 'error');
   btn.dataset.tip = note;
   $('driveOff').hidden = drive.on;
@@ -2123,6 +2920,9 @@ document.addEventListener('click', e => {
   const menuBtn = e.target.closest('[aria-controls]');
   if (menuBtn) { toggleMenu(menuBtn); return; }
   if (!e.target.closest('.menu') || e.target.closest('.menu-item, .doc-open')) closeMenus();
+  // Menus « … » du panneau Textes et liste des dossiers de « Ce texte » : un clic ailleurs les ferme
+  if (libState.menu && !e.target.closest('.lib-menu, [data-dmenu], [data-fmenu]')) { libState.menu = null; renderLib(); }
+  if (folderPick && !e.target.closest('#metaFolderPick, #metaFolderBtn')) { folderPick = false; renderMeta(); }
   const chip = e.target.closest('.chip');
   if (chip) {
     if (chip.closest('#curSug')) replaceWord(chip.dataset.word);
@@ -2138,11 +2938,13 @@ document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); toggleVersions(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveDoc(); }
+  else if (mod && e.code === 'Space' && activeProd()) { e.preventDefault(); togglePlay(); }
   else if (e.key === 'Escape') {
     const menuOpen = document.querySelector('.menu:not([hidden])');
     closeMenus();
     hideTip();
-    if (lockedPh) setLock(null);
+    if (libState.menu || folderPick) { libState.menu = null; folderPick = false; renderLib(); renderMeta(); }
+    else if (lockedPh) setLock(null);
     else if (!menuOpen && document.activeElement !== $('vLabel')) closeVersions();
   }
 });
@@ -2156,6 +2958,9 @@ addEventListener('resize', () => layoutStrip());
   applyPrefs();
   renderDocState();
   renderDrive();
+  renderLib();
+  renderMeta();
+  renderProd();
   if (drive.on) {
     loadGis().catch(() => {});
     if (hasToken()) syncDrive();
