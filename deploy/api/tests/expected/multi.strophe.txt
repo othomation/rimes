@@ -1,0 +1,21 @@
+  1 A   riche          couloir        lumière~colère(v2)[α]
+  2 A   riche          tiroir         colère~lumière(v1)[α]
+  3 A   riche          trottoir       repère~espère(v4)[α]
+  4 A   riche          noir           hiver~espère[α] espère~repère(v3)[α] voir~noir[A]
+
+  5 B   multi          anesthésie     scalpel~rappel(v6)[β] opère~espère(v4)[α]
+  6 B   suffisante     choisis        rappel~appel[β] appel~rappel[β]
+  7 B   multi          saisit         fidèle~réel[β] réel~fidèle[β] vie~saisit[B] strophe
+  8 b   asso ≈         moisisse       ciel~cruel[β] cruel~ciel[β] j'écris~saisit(v7)[B]
+
+  9 C   suffisante     fêtes          têtes~fêtes[C]
+ 10 C   suffisante     tête           répète~quête[C] quête~répète[C]
+ 11 D   riche          mer
+ 12 D   riche          éphémère       amer~éphémère[D]
+famille α « èr » : lumière ~ colère ~ repère ~ hiver ~ espère ~ opère
+famille β « èl » : scalpel ~ rappel ~ appel ~ fidèle ~ réel ~ ciel ~ cruel
+reprise « mêmes » : v9 v9 v9 v10 v10
+reprise « têtes » : v9 v9 v10
+reprise « répète » : v10 v10
+reprise « rêve » : v11 v12
+reprise « mer » : v11 v11

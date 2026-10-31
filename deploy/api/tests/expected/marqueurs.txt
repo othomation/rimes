@@ -1,0 +1,10 @@
+  1 A   suffisante     heures
+  2 A   suffisante     peurs
+
+  3 B   suffisante     bitume
+  4 B   riche          brume          allume~brume[B]
+  5 B   riche          s'enrhume
+  6 C   suffisante     paradis
+  7 C   suffisante     dit            vit~nuit[C] nuit~vit[C]
+reprise « nuit » : v5 v7
+reprise « paradis » : v6 v6

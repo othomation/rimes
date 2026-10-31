@@ -1,0 +1,12 @@
+  1 A   pauvre         côté
+  2 A   pauvre         kéké           s'accrocher~côté(v1)[A]
+
+  3 ·                  Dieux          jeu~Dieux[α] Dieux~jeu[α]
+
+  4 B   suffisante     rites          rides~vide(v5)[C]
+
+  5 C   suffisante     vide
+  6 B   suffisante     rites
+  7 C   suffisante     guide
+  8 B   suffisante     vite
+famille α « eu » : jeu ~ Dieux

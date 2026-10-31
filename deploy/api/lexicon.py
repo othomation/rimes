@@ -236,18 +236,24 @@ class Lexicon:
         return {'w': word, 'k': k, 'syl': matched_syl, 'n': P.syllables(phon), 'cat': cat,
                 'approx': phon[-k:] != q[-k:], 'derived': derived, 'freq': round(freq, 2)}
 
-    def _rhyme_bands(self, ctx, min_k, n):
-        """Parcourt les mots par nombre décroissant de phonèmes communs avec la requête."""
-        q = P.loose(ctx['phon'])[::-1]
-        keys, ids = self._rhyme_keys, self._rhyme_ids
+    @staticmethod
+    def _bands(keys, ids, q, min_k):
+        """Bandes de mots dont la clé (triée, à l'envers) commence par q[:k], k décroissant.
+
+        Chaque bande exclut la précédente : un mot n'apparaît qu'une fois, avec son plus long préfixe commun."""
         inner = None
         for k in range(len(q), min_k - 1, -1):
             lo, hi = _prefix_range(keys, q[:k])
-            matched_syl = P.syllables(q[:k])
             spans = [(lo, hi)] if inner is None else [(lo, inner[0]), (inner[1], hi)]
             inner = (lo, hi)
+            yield k, (ids[j] for a, b in spans for j in range(a, b))
+
+    def _rhyme_bands(self, ctx, min_k, n):
+        """Parcourt les mots par nombre décroissant de phonèmes communs avec la requête."""
+        q = P.loose(ctx['phon'])[::-1]
+        for k, candidates in self._bands(self._rhyme_keys, self._rhyme_ids, q, min_k):
+            matched_syl = P.syllables(q[:k])
             full = k == len(q)
-            candidates = (ids[j] for a, b in spans for j in range(a, b))
             accepted = (i for i in candidates if self._accept(self.entries[i], ctx))
             best = heapq.nlargest(n * 3, accepted, key=lambda i: self.entries[i][3])
             for i in best:
@@ -261,14 +267,8 @@ class Lexicon:
     def _assonances(self, ctx, key, n):
         """Même voyelle finale mais consonnes différentes, en privilégiant les suites de voyelles longues."""
         vq = ''.join(P.vowels(ctx['phon']))[::-1]
-        keys, ids = self._vowel_keys, self._vowel_ids
         out = []
-        inner = None
-        for k in range(len(vq), 0, -1):
-            lo, hi = _prefix_range(keys, vq[:k])
-            spans = [(lo, hi)] if inner is None else [(lo, inner[0]), (inner[1], hi)]
-            inner = (lo, hi)
-            candidates = (ids[j] for a, b in spans for j in range(a, b))
+        for k, candidates in self._bands(self._vowel_keys, self._vowel_ids, vq, 1):
             accepted = (i for i in candidates
                         if P.rhyme_key(self.entries[i][1]) != key and self._accept(self.entries[i], ctx))
             for i in heapq.nlargest(n - len(out), accepted, key=lambda i: self.entries[i][3]):

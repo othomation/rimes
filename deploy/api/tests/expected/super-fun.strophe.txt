@@ -1,0 +1,7 @@
+  1 A   identique      super
+  2 a   asso ≈         têtes
+  3 B   identique      grave
+
+  4 A   identique      super
+  5 B   identique      grave
+reprise « têtes » : v2 v3

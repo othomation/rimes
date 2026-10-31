@@ -1,0 +1,30 @@
+liberté  → libèrté · rime é
+  multi       semi-liberté demi-liberté puberté fierté déserté alerté
+  riche       porter sortez partez apporté supporter porté
+  suffisante  été côté rester vérité arrêter monter
+  pauvre      est allez parler assez avez voulez
+  assonance   anniversaire propriétaire littéraire itinéraire universelle irréel
+têtes  → tèt · rime èt
+  homophone   tète tette
+  riche       tête-à-tête en-tête entête esthète casse-tête nu-tête
+  suffisante  êtes faites arrête fête sept inquiète
+  assonance   est était faire fait sais ai
+je pars bien vite  → jeparbyinvit · rime it
+  multi       invite réinvite désinvite
+  riche       évite aquavit akvavit lévitent moscovite conjonctivite
+  suffisante  petite suite dites ensuite visite huit
+  assonance   appendice amoindrir amincit amoindri amincissent amincir
+lumière {'syl': 2} → lumyèr · rime èr
+  multi       fumière
+  riche       première fermière chaumière trémières crémière dernière
+  suffisante  affaire travers espère contraire grand-père grand-mère
+  assonance   sujet lunettes succès humaine fumée superbe
+monde {'cat': 'NOM'} → mond · rime ond
+  riche       tiers-monde mappemonde demi-monde arrière-monde anti-monde quart-monde
+  suffisante  seconde ondes sonde micro-ondes fronde faconde
+  assonance   maison nom raison question fond façon
+zorblax  → zorbla · rime a · devinée
+  riche       sembla troubla rassembla bla-bla blabla trembla
+  suffisante  là au-delà alla plat éclat chocolat
+  pauvre      pas va fois quoi pourquoi as
+  assonance   normal dollars dommage trottoir personnage nationale

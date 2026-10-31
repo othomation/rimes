@@ -34,6 +34,24 @@ def _fam_label(i):
     return FAM_LABELS[i % 24] + (str(i // 24 + 1) if i >= 24 else '')
 
 
+class _Union:
+    """Union-find : des classes d'éléments, chacune représentée par sa racine."""
+
+    def __init__(self):
+        self.parent = {}
+
+    def find(self, x):
+        p = self.parent
+        while p.get(x, x) != x:
+            p[x] = p.get(p[x], p[x])
+            x = p[x]
+        return x
+
+    def union(self, a, b):
+        """Rattache la classe de b à celle de a."""
+        self.parent[self.find(b)] = self.find(a)
+
+
 # ── Marqueurs : # commentaire, [section], (adlib) ──
 
 def _tokens(row):
@@ -117,7 +135,32 @@ def _best_partner(i, members, parsed):
 
 def analyze(rows, lex, whole_stanza=False):
     """whole_stanza : rimes de strophe, un mot accentué rime avec toute fin de vers de sa strophe."""
-    # ── Lignes : vers, strophes (lignes vides) et blocs ([sections]) ──
+    out_rows, verses = _verses(rows)
+    parsed = [_parse_line(v['spoken'], lex) for v in verses]
+    groups, line_group = _end_rhymes(parsed)
+    _assonances(parsed, groups, line_group)
+    _name_groups(groups, parsed)
+    out_lines = [_line(i, p, verses[i], line_group[i], parsed) for i, p in enumerate(parsed)]
+    for g in groups:
+        g['levels'] = dict(g['levels'])
+
+    families = _internal(verses, parsed, out_lines, whole_stanza)
+    for p, line in zip(parsed, out_lines):
+        line['cells'] = _cells(p, line)
+
+    return {
+        'rows': out_rows,
+        'lines': out_lines,
+        'groups': groups,
+        'families': families,
+        'repeats': _repeats(verses, parsed),
+        'sounds': _sounds(parsed, lex.baseline),
+        'echoes': _echoes(parsed, line_group),
+    }
+
+
+def _verses(rows):
+    """Type de chaque ligne, et les vers avec leur strophe (lignes vides) et leur bloc ([sections])."""
     out_rows, verses = [], []
     stanza = block = 0
     gap = False
@@ -136,18 +179,20 @@ def analyze(rows, lex, whole_stanza=False):
             if kind == 'section':
                 block += 1
         out_rows.append({'type': kind, 'verse': len(verses) - 1 if kind == 'verse' else None})
+    return out_rows, verses
 
-    parsed = [_parse_line(v['spoken'], lex) for v in verses]
-    n = len(parsed)
 
-    # ── Rimes : même voyelle finale + mêmes consonnes qui suivent ──
+def _end_rhymes(parsed):
+    """Rimes de fin : même voyelle finale et mêmes consonnes qui suivent.
+
+    Une fin restée seule rime ≈ si sa coda ne diffère que par le voisement (rides ~ rites)."""
     by_key = defaultdict(list)
     for i, p in enumerate(parsed):
         key = P.rhyme_key(p['end_phon'])
         if key:
             by_key[key].append(i)
     groups = []
-    line_group = [None] * n
+    line_group = [None] * len(parsed)
     lonely = defaultdict(list)
     for key, members in by_key.items():
         if len(members) > 1:
@@ -158,7 +203,6 @@ def analyze(rows, lex, whole_stanza=False):
         else:
             lonely[P.voiced_key(key)].append(members[0])
 
-    # ── Rimes approximatives : une fin restée seule rime ≈ si sa coda ne diffère que par le voisement (rides ~ rites) ──
     by_voiced = {}
     for g in groups:
         by_voiced.setdefault(P.voiced_key(g['key']), g)
@@ -171,9 +215,14 @@ def analyze(rows, lex, whole_stanza=False):
             g['lines'] = sorted(g['lines'] + members)
             for i in members:
                 line_group[i] = g
+    return groups, line_group
 
-    # ── Assonances : même voyelle finale, consonnes différentes, vers proches ──
-    unrhymed = [i for i in range(n) if line_group[i] is None and parsed[i]['end'] is not None]
+
+def _assonances(parsed, groups, line_group):
+    """Fins sans rime : même voyelle finale, consonnes différentes, vers proches.
+
+    Une fin se joint d'abord à la rime la plus proche sur sa voyelle, sinon aux autres fins seules."""
+    unrhymed = [i for i in range(len(parsed)) if line_group[i] is None and parsed[i]['end'] is not None]
     for i in unrhymed:
         v = P.vowel_key(parsed[i]['end_phon'])
         near = [(abs(i - j), line_group[j]) for g in groups for j in g['lines']
@@ -183,21 +232,17 @@ def analyze(rows, lex, whole_stanza=False):
             g['asso'].append(i)
             line_group[i] = g
 
-    parent = {}
-    def find(x):
-        while parent.get(x, x) != x:
-            x = parent[x]
-        return x
+    uf = _Union()
     loose_lines = [i for i in unrhymed if line_group[i] is None]
     for a_idx, i in enumerate(loose_lines):
         for j in loose_lines[a_idx + 1:]:
             if j - i > ASSO_WINDOW:
                 break
             if P.vowel_key(parsed[i]['end_phon']) == P.vowel_key(parsed[j]['end_phon']):
-                parent[find(j)] = find(i)
+                uf.union(i, j)
     components = defaultdict(list)
     for i in loose_lines:
-        components[find(i)].append(i)
+        components[uf.find(i)].append(i)
     for members in components.values():
         if len(members) > 1:
             v = P.vowel_key(parsed[members[0]]['end_phon'])
@@ -206,6 +251,9 @@ def analyze(rows, lex, whole_stanza=False):
             for i in members:
                 line_group[i] = g
 
+
+def _name_groups(groups, parsed):
+    """Lettres dans l'ordre d'apparition, et le son affiché de chaque groupe."""
     groups.sort(key=lambda g: min(g['lines'] + g['asso']))
     for idx, g in enumerate(groups):
         g['label'] = _label(idx)
@@ -219,52 +267,35 @@ def analyze(rows, lex, whole_stanza=False):
             g['display'] = P.display(first[P.last_vowel_index(first)])
         g['levels'] = Counter()
 
-    # ── Détail par vers ──
-    out_lines = []
-    for i, p in enumerate(parsed):
-        g = line_group[i]
-        line = {
-            'row': verses[i]['row'],
-            'stanza': verses[i]['stanza'],
-            'syl': p['syl'],
-            'end': p['end'],
-            'muted': [t for t, s in enumerate(verses[i]['spoken']) if not s],
-            'guess': bool(p['end'] is not None and p['words'][p['end']]['guess']),
-            'phon': P.display(p['end_phon']),
-            'rime': P.display(p['end_phon'][P.last_vowel_index(p['end_phon']):]) if p['end_phon'] else '',
-            'group': g['key'] if g else None,
-            'kind': None, 'level': None, 'k': 0, 'syl_match': 0, 'partner': None, 'exact': True,
-            'internal': [],
-        }
-        if g and i in g['lines']:
-            best = _best_partner(i, g['lines'], parsed)
-            line['kind'] = 'rime'
-            if best:
-                _, j, level, cmp = best
-                line.update(level=level, k=cmp['k'], syl_match=cmp['syl'], partner=j, exact=cmp['exact'])
-                g['levels'][level] += 1
-        elif g:
-            members = [j for j in g['lines'] + g['asso'] if j != i]
-            j = min(members, key=lambda j: abs(i - j))
-            line.update(kind='asso', partner=j, exact=False,
-                        syl_match=P.common_vowel_suffix(p['tail'], parsed[j]['tail']))
-        out_lines.append(line)
 
-    for g in groups:
-        g['levels'] = dict(g['levels'])
-
-    families = _internal(verses, parsed, out_lines, whole_stanza)
-    for p, line in zip(parsed, out_lines):
-        line['cells'] = _cells(p, line)
-
-    return {
-        'rows': out_rows,
-        'lines': out_lines,
-        'groups': groups,
-        'families': families,
-        'sounds': _sounds(parsed, lex.baseline),
-        'echoes': _echoes(parsed, line_group),
+def _line(i, p, verse, g, parsed):
+    """Détail d'un vers : sa fin, son groupe, la richesse de sa rime et son partenaire."""
+    line = {
+        'row': verse['row'],
+        'stanza': verse['stanza'],
+        'syl': p['syl'],
+        'end': p['end'],
+        'muted': [t for t, s in enumerate(verse['spoken']) if not s],
+        'guess': bool(p['end'] is not None and p['words'][p['end']]['guess']),
+        'phon': P.display(p['end_phon']),
+        'rime': P.display(p['end_phon'][P.last_vowel_index(p['end_phon']):]) if p['end_phon'] else '',
+        'group': g['key'] if g else None,
+        'kind': None, 'level': None, 'k': 0, 'syl_match': 0, 'partner': None, 'exact': True,
+        'internal': [],
     }
+    if g and i in g['lines']:
+        best = _best_partner(i, g['lines'], parsed)
+        line['kind'] = 'rime'
+        if best:
+            _, j, level, cmp = best
+            line.update(level=level, k=cmp['k'], syl_match=cmp['syl'], partner=j, exact=cmp['exact'])
+            g['levels'][level] += 1
+    elif g:
+        members = [j for j in g['lines'] + g['asso'] if j != i]
+        j = min(members, key=lambda j: abs(i - j))
+        line.update(kind='asso', partner=j, exact=False,
+                    syl_match=P.common_vowel_suffix(p['tail'], parsed[j]['tail']))
+    return line
 
 
 def _cells(p, line):
@@ -379,30 +410,24 @@ def _internal(verses, parsed, lines, whole_stanza=False):
 
     # Du lien le plus fort au plus faible, sans jamais fondre deux rimes de fin ; les rimes de strophe en dernier
     edges.sort(key=lambda e: (e[6], not e[0], -e[1], -e[2], e[3]))
-    parent = list(range(len(nodes)))
+    uf = _Union()
     owner = [nd['group'] for nd in nodes]
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
     for e in edges:
-        ra, rb = find(e[4]), find(e[5])
+        ra, rb = uf.find(e[4]), uf.find(e[5])
         if ra != rb and not (owner[ra] and owner[rb] and owner[ra] != owner[rb]):
-            parent[rb] = ra
+            uf.union(ra, rb)
             owner[ra] = owner[ra] or owner[rb]
 
     partner = {}    # lien le plus fort de chaque mot vers sa famille
     for exact, k, v, d, a, b, echo in edges:
-        if find(a) == find(b):
+        if uf.find(a) == uf.find(b):
             partner.setdefault(a, (b, k, v, exact, echo))
             partner.setdefault(b, (a, k, v, exact, echo))
 
     members = defaultdict(list)
     for x in range(len(nodes)):
-        members[find(x)].append(x)
+        members[uf.find(x)].append(x)
     families = []
     for root, xs in members.items():
         if len(xs) < 2:
@@ -425,6 +450,38 @@ def _internal(verses, parsed, lines, whole_stanza=False):
     for line in lines:
         line['internal'].sort(key=lambda it: it['i'])
     return families
+
+
+def _repeats(verses, parsed):
+    """Mots accentués repris dans une même strophe : le même mot, ou hors verbes le même lemme (tête, têtes).
+
+    Une autre forme d'un verbe (dise, dire) ne compte pas : on ne l'entend pas comme une reprise.
+    Une reprise n'est pas une rime (un mot ne rime pas avec lui-même) : l'affichage est une option du front."""
+    occ = []
+    for li, (v, p) in enumerate(zip(verses, parsed)):
+        words, end = p['words'], p['end']
+        for i, w in enumerate(words):
+            if w and P.last_vowel_index(w['phon']) >= 0 and (i == end or _accented(words, v['spoken'], i)):
+                occ.append((li, i, w))
+    uf = _Union()
+    first = {}      # (strophe, mot ou lemme) → première occurrence
+    for x, (li, i, w) in enumerate(occ):
+        stanza = verses[li]['stanza']
+        lemmes = () if w['cat'].startswith(('VER', 'AUX')) else w['lemmes']
+        for key in [(stanza, 'w', w['word'])] + [(stanza, 'l', lemme) for lemme in lemmes]:
+            if key in first:
+                uf.union(first[key], x)
+            else:
+                first[key] = x
+    members = defaultdict(list)
+    for x in range(len(occ)):
+        members[uf.find(x)].append(x)
+    out = []
+    for xs in members.values():
+        if len(xs) > 1:
+            out.append({'key': f'r{len(out)}', 'word': occ[xs[0]][2]['word'],
+                        'members': [[occ[x][0], occ[x][1]] for x in xs]})
+    return out
 
 
 def _sounds(parsed, baseline):

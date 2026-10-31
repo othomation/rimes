@@ -1,10 +1,16 @@
 import os
+import time
 
-from flask import Flask, jsonify, request
+# /health : heure de lecture du code, avant les imports du moteur. En dev, tools/api-reload.mjs y voit si Flask a
+# rechargé une modification (une modification enregistrée pendant un rechargement peut être ignorée).
+STARTED = time.time()
 
-from analysis import analyze
-from lexicon import Lexicon
+from flask import Flask, jsonify, request  # noqa: E402
 
+from analysis import analyze  # noqa: E402
+from lexicon import Lexicon  # noqa: E402
+
+# Front et API sont servis par Caddy sur le même domaine : pas d'en-têtes CORS
 app = Flask(__name__)
 
 LEXIQUE_PATH = os.environ.get('LEXIQUE_PATH') or os.path.join(os.path.dirname(__file__), 'lexique.tsv')
@@ -14,13 +20,6 @@ lexicon = Lexicon(LEXIQUE_PATH)
 print(f'Lexique3 loaded — {len(lexicon)} mots, {len(lexicon.entries)} entrées de rime', flush=True)
 
 MAX_CHARS = 20000   # ~5 morceaux ; l'analyse s'arrête de toute façon à 400 vers
-
-
-@app.after_request
-def cors(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
 
 
 @app.route('/query')
@@ -50,7 +49,7 @@ def analyze_route():
 
 @app.route('/health')
 def health():
-    return jsonify({'ok': True, 'words': len(lexicon)})
+    return jsonify({'ok': True, 'words': len(lexicon), 'started': STARTED})
 
 
 if __name__ == '__main__':

@@ -1,0 +1,14 @@
+  1 A   multi          côté
+  2 A   pauvre         kéké           s'accrocher~côté(v1)[A]
+  3 A   multi          cotés
+  4 A   multi          sauter
+  5 ·                  Dieux          jeu~Dieux[α] Dieux~jeu[α]
+  6 B   suffisante     rites          rides~vide(v7)[B]
+  7 B   suffisante     rites          vide~rides(v6)[B]
+  8 B   suffisante     vite           guide~vide(v7)[B]
+
+  9 C   suffisante     guerre
+ 10 C   riche          lumière
+ 11 C   riche          poussière      perd~poussière[C]
+famille α « eu » : jeu ~ Dieux
+reprise « rites » : v6 v7
