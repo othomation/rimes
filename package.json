@@ -1,0 +1,13 @@
+{
+  "name": "rime",
+  "private": true,
+  "description": "Analyseur de schémas de rimes pour le rap en français. Aucune dépendance : ce fichier dit seulement à Node que les .js sont des modules, et range les vérifications.",
+  "type": "module",
+  "scripts": {
+    "check": "bash tools/check.sh",
+    "check:engine": "bash tools/check.sh engine",
+    "check:parity": "node tools/parity.mjs",
+    "check:sync": "node --no-warnings tools/sync-test.mjs",
+    "screens": "node --no-warnings tools/screens.mjs"
+  }
+}
