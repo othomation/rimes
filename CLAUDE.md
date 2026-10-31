@@ -24,7 +24,7 @@ Analyseur de schémas de rimes pour des paroles de rap en français. Il détecte
   - Lecteur : API IFrame de YouTube (`youtube-nocookie.com`), chargée à la première prod. Une vidéo ne se joue pas cachée : plier le lecteur, masquer le panneau ou passer en mode Versions met en pause. Pendant la lecture, le lecteur reste collé en haut du panneau. Ctrl+Espace : lecture et pause.
 - Bascules de l'en-tête Flow, Voyelles, Strophe, Reprises (dans un menu « Affichage » sur mobile) :
   - « Strophe » : `stanza` dans `rime-prefs` et dans la requête d'analyse ;
-  - « Reprises » : `repeats` dans `rime-prefs` ; l'API donne toujours les reprises, seul l'affichage change (un trait au-dessus du mot, `.rp`).
+  - « Reprises » : `repeats` dans `rime-prefs` ; l'API donne toujours les reprises, seul l'affichage change (un cadre gris fin autour du mot, `.rp`).
 - Confirmations et noms passent par la boîte de dialogue `ask()` (un `<dialog>`), jamais par `confirm()` ni `prompt()`. Les infobulles sont des `data-tip`, montrées au survol et au focus clavier (`aria-describedby`).
 - Sauvegarde exportée : `{app: 'rime', version: 3, exported, folders, texts: [...], versions?}`, les textes avec leurs dossier, tags et prods. L'import accepte les versions 1 à 3 et des `.txt`, retrouve les dossiers par leur nom, et n'écrase jamais un texte sauvé.
 - Historique des versions : une copie complète du texte à chaque « Sauver » qui le change, dans IndexedDB (base `rime`, magasin `versions`, index `docId`).

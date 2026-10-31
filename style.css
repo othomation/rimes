@@ -244,8 +244,9 @@ select.field { padding: 0 4px; font-size: 13px; color: var(--text2); }
 /* Label de famille posé en absolu : il ne prend aucune place */
 .mirror .f::after { content: attr(data-tag); position: absolute; right: -3px; top: -6px; font-size: 9px; font-weight: 700; line-height: 1; pointer-events: none; }
 .mirror [data-k] { transition: opacity .12s, box-shadow .12s; }
-/* Reprise (option Reprises) : un trait au-dessus du mot, neutre ; une reprise n'est pas une rime */
-.mirror .rp { text-decoration: overline var(--text2); text-decoration-thickness: 2px; }
+/* Reprise (option Reprises) : un cadre gris fin, neutre, qui laisse intactes les couleurs des rimes ; une reprise
+   n'est pas une rime. --c : la couleur du cadre quand on survole la reprise (la mise en évidence remplace l'ombre) */
+.mirror .rp { --c: var(--text2); box-shadow: 0 0 0 1px var(--border2); border-radius: 4px; }
 
 /* Poignée de la bande */
 .col-handle { cursor: col-resize; touch-action: none; }
