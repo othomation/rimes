@@ -13,6 +13,8 @@ services:
       - ../index.html:/srv/rime/index.html
       - ../style.css:/srv/rime/style.css
       - ../script.js:/srv/rime/script.js
+      - ../markers.js:/srv/rime/markers.js
+      - ../diff.js:/srv/rime/diff.js
       # Caddyfile dev proxie /api/ vers le container api
       - ./Caddyfile.dev:/etc/caddy/Caddyfile
     networks:
@@ -29,6 +31,7 @@ services:
       - ./api/analysis.py:/app/analysis.py
       - ./api/lexicon.py:/app/lexicon.py
       - ./api/phonetics.py:/app/phonetics.py
+      - ./api/tests:/app/tests
     command: ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5000", "--reload"]
     environment:
       FLASK_DEBUG: "1"

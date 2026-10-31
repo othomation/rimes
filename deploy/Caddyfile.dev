@@ -6,6 +6,12 @@
     handle {
         root * /srv/rime
         file_server
+        # Garder identique au bloc de Caddyfile (production)
+        header {
+            Cache-Control "no-cache"
+            Content-Security-Policy "default-src 'self'; script-src 'self' https://www.youtube.com https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://www.googleapis.com https://www.youtube.com https://accounts.google.com/gsi/; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+            Referrer-Policy "strict-origin-when-cross-origin"
+        }
     }
     encode gzip
 }

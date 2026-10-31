@@ -2,4 +2,13 @@
     root * /srv/rime
     file_server
     encode gzip
+
+    # Garder identique au bloc de Caddyfile.dev
+    header {
+        # Le navigateur revalide chaque fichier (ETag) : une mise en production se voit sans changer ?v=
+        Cache-Control "no-cache"
+        # Le jeton Google Drive vit dans localStorage : la CSP limite ce qu'un script injecté pourrait en faire
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://www.youtube.com https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://www.googleapis.com https://www.youtube.com https://accounts.google.com/gsi/; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://accounts.google.com/gsi/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
 }

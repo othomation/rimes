@@ -1,0 +1,7 @@
+# Contexte de l'image du front (deploy/Dockerfile) : seuls les fichiers servis comptent
+.git
+.claude
+docs
+tools
+deploy/api
+**/__pycache__
