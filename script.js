@@ -1,3 +1,6 @@
+import { cleanWord, docTitle, rowType, scanTokens, spokenTokens, tokenOffsets, verseCount } from './markers.js';
+import { diffRows, foldRows, lineStats, splitLines } from './diff.js';
+
 // ── Couleurs : classes k0..k7 → --col0..7 ──
 const N_COLS = 8;
 const kc = ci => `k${ci % N_COLS}`;
@@ -28,10 +31,12 @@ const ROW_NOTES = {
 
 // Éditeur : hauteur d'une ligne (--row) ; la bande auto laisse au texte au moins MIN_TEXT
 const ROW = 32;
-const MIN_STRIP = 150, MAX_STRIP = 760, MIN_TEXT = 360;
+const MIN_STRIP = 100, MAX_STRIP = 760, MIN_TEXT = 360;
 
 const $ = id => document.getElementById(id);
 const ta = $('input'), editor = $('editor'), mirror = $('mirror'), gutter = $('gutter'), strip = $('strip'), metaCol = $('meta');
+const body = document.querySelector('.body');
+const plural = (n, one, many = `${one}s`) => `${n} ${n > 1 ? many : one}`;
 
 // ── Préférences et textes, par navigateur ──
 function stored(key, fallback) {
@@ -43,19 +48,62 @@ function store(key, value) {
 
 // Sur petit écran, bande et panneau sont masqués d'abord : le texte garde la place
 const wide = window.innerWidth > 760;
-// stanza : rimes de strophe ; lib : panneau Textes ; libOpen : dossiers repliés (false) ; prodLoop : boucle des prods
+// stanza : rimes de strophe ; repeats : reprises ; lib : panneau Textes ; libOpen : dossiers repliés (false) ;
+// prodLoop : boucle des prods ; fold : sections repliées du panneau d'analyse
 // Le panneau Textes s'ouvre d'office sur un grand écran seulement : avec les deux panneaux, l'éditeur a besoin de place
-const prefs = { mode: 'all', flow: wide, vow: false, rail: wide, strip: null, stanza: false, lib: window.innerWidth >= 1280, libOpen: {}, prodLoop: true, ...stored('rime-prefs', {}) };
+const prefs = { mode: 'all', flow: wide, vow: false, rail: wide, strip: null, stanza: false, repeats: false, lib: window.innerWidth >= 1440, libOpen: {}, prodLoop: true, fold: {}, ...stored('rime-prefs', {}) };
 const savePrefs = () => store('rime-prefs', prefs);
 
-// Textes sauvés : { id, text, updated, folder, tags, prods, prod, drive, pending, metaPending, conflict }
-// (updated en ms ; les anciennes entrées n'avaient que leur id). Tous les champs sont gardés au chargement.
-let docs = stored('rime-history', []).map(d => ({ ...d, updated: d.updated ?? d.id }));
-// Texte ouvert, même non sauvé ; pas encore sauvé, il porte lui-même son dossier, ses tags et ses prods
+// Texte ouvert, même non sauvé ; pas encore sauvé, il porte lui-même son dossier, ses tags et ses prods.
+// Propre à l'onglet (rime-current n'est relu qu'au chargement).
 const doc = { id: null, text: '', folder: null, tags: [], prods: [], prod: null, ...stored('rime-current', {}) };
+
+// ── Textes, dossiers et état Drive : partagés par les onglets du navigateur ──
+// Chaque écriture repart du dernier état stocké (mutate) et change rime-rev ; un onglet qui voit rime-rev
+// changer recharge tout (événement storage). Deux onglets ne s'écrasent donc jamais.
+// Textes sauvés : { id, text, updated, folder, tags, prods, prod, drive, pending, metaPending, conflict, stale }
+// (updated en ms ; les anciennes entrées n'avaient que leur id). Tous les champs sont gardés au chargement.
+let docs = [];
 // Dossiers : { id, name, drive, pending } ; un texte est dans un dossier ou dans aucun
-let folders = stored('rime-folders', []);
-const saveFolders = () => store('rime-folders', folders);
+let folders = [];
+// État de la synchro Google Drive : détail dans la section Google Drive
+const DRIVE_DEFAULTS = { on: false, folder: null, folderName: '', wantedName: '', trash: [], trashFolders: [], vroot: null, vfolders: {} };
+const drive = {};
+let sharedRev = null;
+
+function loadShared() {
+  sharedRev = stored('rime-rev', 0);
+  docs = stored('rime-history', []).map(d => ({ ...d, updated: d.updated ?? d.id }));
+  folders = stored('rime-folders', []);
+  Object.keys(drive).forEach(k => delete drive[k]);
+  Object.assign(drive, structuredClone(DRIVE_DEFAULTS), stored('rime-drive', {}));
+}
+loadShared();
+
+// Un autre onglet a écrit depuis notre dernière lecture : on repart de son état. true si c'est le cas
+function refreshShared() {
+  if (stored('rime-rev', 0) === sharedRev) return false;
+  loadShared();
+  return true;
+}
+
+// Applique fn au dernier état partagé, puis l'enregistre. Stockage plein : rien n'est gardé, et false
+function mutate(fn) {
+  refreshShared();
+  fn();
+  const rev = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  if (store('rime-history', docs) && store('rime-folders', folders) && store('rime-drive', drive) && store('rime-rev', rev)) {
+    sharedRev = rev;
+    return true;
+  }
+  loadShared();
+  toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes');
+  return false;
+}
+
+// Modifie un texte sauvé, retrouvé par son id dans le dernier état ; rien s'il a disparu entre-temps
+const withDoc = (id, fn) => mutate(() => { const d = docs.find(x => x.id === id); if (d) fn(d); });
+const savedDoc = () => docs.find(d => d.id === doc.id);
 
 // ── API ──
 const API_BASE = '/api';
@@ -71,6 +119,7 @@ async function fetchRhymes(word, { n = 30, syl = '', cat = '' } = {}) {
     const res = await fetch(`${API_BASE}/query?${key}`);
     if (!res.ok) throw new Error();
     const data = await res.json();
+    if (rhymeCache.size > 300) rhymeCache.clear();
     rhymeCache.set(key, data);
     return data;
   } catch {
@@ -88,63 +137,6 @@ async function fetchAnalysis(lines) {
   return res.json();
 }
 
-function lineTokens(line) {
-  return line.trim().split(/\s+/).filter(Boolean);
-}
-
-function cleanWord(token) {
-  return (token || '').replace(/[‘’ʼ`´′]/g, "'").replace(/[^\p{L}'-]/gu, '').replace(/^['-]+|['-]+$/g, '');
-}
-
-// ── Marqueurs : miroir de analysis.py (le serveur reste la référence) ──
-const REPEAT_RE = /^(?:[x×][0-9]+|[0-9]+[x×])[.,;:!?…]*$/i;
-
-// Pour chaque token : texte prononcé ('' s'il est muet : (adlib), [didascalie], x2, ce qui suit un # isolé)
-// et position [début, fin) de ses lettres prononcées, sans crochets ni ponctuation de bord
-function scanTokens(line) {
-  let depth = 0, cut = false;
-  return lineTokens(line).map((tok, i) => {
-    cut = cut || (tok === '#' && i > 0);
-    let spoken = '', first = -1, last = -1;
-    if (!cut) for (let k = 0; k < tok.length; k++) {
-      const c = tok[k];
-      if (c === '(' || c === '[') depth++;
-      else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
-      else if (!depth) {
-        spoken += c;
-        if (/\p{L}/u.test(c)) { if (first < 0) first = k; last = k + 1; }
-      }
-    }
-    if (REPEAT_RE.test(spoken)) return { spoken: '', span: null };
-    return { spoken, span: first < 0 ? null : [first, last] };
-  });
-}
-
-function spokenTokens(line) {
-  return scanTokens(line).map(t => t.spoken);
-}
-
-const typeMemo = new Map();
-function rowType(line) {
-  let t = typeMemo.get(line);
-  if (t) return t;
-  const toks = lineTokens(line);
-  if (!toks.length) t = 'blank';
-  else if (toks[0].startsWith('#')) t = 'comment';
-  else if (/\p{L}/u.test(spokenTokens(line).join(''))) t = 'verse';
-  else if (toks[0].startsWith('[')) t = 'section';
-  else if (/[([]/.test(line) || toks.some(t => REPEAT_RE.test(t))) t = 'adlib';
-  else t = 'blank';
-  if (typeMemo.size > 5000) typeMemo.clear();
-  typeMemo.set(line, t);
-  return t;
-}
-
-// Position [from, to) de chaque token dans la ligne brute (même découpage que lineTokens)
-function tokenOffsets(line) {
-  return [...line.matchAll(/\S+/g)].map(m => ({ from: m.index, to: m.index + m[0].length }));
-}
-
 // Mot prononcé d'un vers analysé : « paradis(merde) » → « paradis »
 function spokenWord(lineIndex, wordIndex, res = lastResult) {
   return cleanWord(spokenTokens(res.lines[lineIndex])[wordIndex]);
@@ -153,13 +145,6 @@ function spokenWord(lineIndex, wordIndex, res = lastResult) {
 function endWordOf(i, res = lastResult) {
   const info = res.info[i];
   return info.end === null ? '' : spokenWord(i, info.end, res);
-}
-
-// Titre d'un texte : sa première ligne « # … » avant le premier vers ; sinon, hors strict, son premier vers
-function docTitle(text, strict = false) {
-  const first = text.split('\n').find(l => ['comment', 'verse'].includes(rowType(l))) || '';
-  if (rowType(first) === 'comment') return first.trim().replace(/^#+\s*/, '');
-  return strict ? '' : first.trim();
 }
 
 // « Rime interne C avec « côté » (vers 17) · 2 voyelles en commun »
@@ -176,6 +161,16 @@ function internalSummary(l, v) {
     const [pv, pw] = it.with;
     return `${spokenWord(v, it.i)} ~ ${spokenWord(pv, pw)}${pv === v ? '' : ` (v.${pv + 1})`}`;
   }).join(' · ');
+}
+
+// Reprise d'un mot (option Reprises) : la famille de reprises du mot w du vers v, ou rien
+const repeatAt = (v, w) => prefs.repeats ? lastResult?.repOf.get(`${v}:${w}`) : undefined;
+
+// « Repris 3 fois dans la strophe : têtes (v.2), têtes (v.3) »
+function repeatTitle(r, v, w) {
+  const others = r.members.filter(([pv, pw]) => pv !== v || pw !== w)
+    .map(([pv, pw]) => `${spokenWord(pv, pw)} (${pv === v ? 'même vers' : `v.${pv + 1}`})`);
+  return `Reprise : ${r.members.length} fois dans la strophe · aussi ${others.join(', ')}`;
 }
 
 // ── Analyse principale ──
@@ -216,11 +211,14 @@ async function analyze() {
     const k = `${v}:${w}`;
     famOf.set(k, [...(famOf.get(k) || []), f.key]);
   }));
+  // repOf : la famille de reprises de chaque mot (« vers:mot »)
+  const repeats = data.repeats || [], repOf = new Map();
+  repeats.forEach(r => r.members.forEach(([v, w]) => repOf.set(`${v}:${w}`, r)));
   const rowKeys = data.lines.map(() => new Set());
   data.lines.forEach((l, v) => [l.group, ...l.internal.map(it => it.group)].forEach(k => k && rowKeys[v].add(k)));
-  data.families.forEach(f => f.members.forEach(([v]) => rowKeys[v].add(f.key)));
+  [...data.families, ...repeats].forEach(f => f.members.forEach(([v]) => rowKeys[v].add(f.key)));
   setResult({
-    ...data, sent, groups, groupList: data.groups, info: data.lines, famOf,
+    ...data, sent, groups, groupList: data.groups, info: data.lines, famOf, repeats, repOf,
     rowKeys: rowKeys.map(s => [...s].join(' ')),
     lines: data.lines.map(l => sent[l.row].trim()),
   });
@@ -380,13 +378,15 @@ function tokenHtml(tok, { spoken, span }, mark, w) {
   if (!span) return escHtml(tok);
   const [a, b] = span;
   const word = escHtml(tok.slice(a, b));
+  // Un mot qui rime et qui est repris : le trait de reprise sur une couche à part, ses décorations s'ajoutent
+  const text = mark?.rep ? `<span class="rp">${word}</span>` : word;
   const inner = mark
-    ? `<span class="${mark.cls}" data-w="${w}" data-k="${escHtml(mark.keys)}"${mark.tag ? ` data-tag="${escHtml(mark.tag)}"` : ''}>${word}</span>`
+    ? `<span class="${mark.cls}" data-w="${w}" data-k="${escHtml(mark.keys)}"${mark.tag ? ` data-tag="${escHtml(mark.tag)}"` : ''}>${text}</span>`
     : word;
   return edge(tok.slice(0, a)) + inner + edge(tok.slice(b));
 }
 
-// Mots surlignés d'un vers analysé : index du mot → { classes, clés de famille, label de famille }
+// Mots surlignés d'un vers analysé : index du mot → { classes, clés de famille, label de famille, reprise }
 function wordMarks(v) {
   const { info, groups } = lastResult;
   const l = info[v], marks = new Map();
@@ -396,6 +396,12 @@ function wordMarks(v) {
   });
   const own = groups[l.group];
   if (own && l.end !== null) marks.set(l.end, { cls: `${l.kind === 'asso' ? 's' : 'e'} ${kc(own.ci)}`, keys: wordKeys(v, l.end, l.group) });
+  if (prefs.repeats) lastResult.repeats.forEach(r => r.members.forEach(([rv, w]) => {
+    if (rv !== v) return;
+    const m = marks.get(w);
+    if (m) Object.assign(m, { rep: true, keys: `${m.keys} ${r.key}` });
+    else marks.set(w, { cls: 'rp', keys: r.key });
+  }));
   return marks;
 }
 
@@ -455,41 +461,48 @@ function longestVerse() {
   return w;
 }
 
-let drag = null;
+// Poignée de largeur : glisser, double-clic pour la largeur par défaut, flèches au clavier (Maj : pas plus grand).
+// get : largeur actuelle ; set(w) : nouvelle largeur, null pour le défaut ; sign : -1 si glisser vers la gauche élargit
+function makeResizer(els, { get, set, sign = 1, cls }) {
+  let drag = null;
+  const host = cls[0];
+  els.forEach(el => {
+    el.addEventListener('pointerdown', e => {
+      if (e.button) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      drag = { x: e.clientX, w: get() };
+      host.classList.add(cls[1]);
+    });
+    el.addEventListener('pointermove', e => { if (drag) set(drag.w + sign * (e.clientX - drag.x)); });
+    const end = () => {
+      if (!drag) return;
+      drag = null;
+      host.classList.remove(cls[1]);
+      savePrefs();
+    };
+    el.addEventListener('pointerup', end);
+    el.addEventListener('lostpointercapture', end);
+    el.addEventListener('dblclick', () => { set(null); savePrefs(); });
+  });
+  els[0].addEventListener('keydown', e => {
+    const step = (e.shiftKey ? 60 : 20) * sign;
+    if (e.key === 'ArrowRight') set(get() + step);
+    else if (e.key === 'ArrowLeft') set(get() - step);
+    else if (e.key === 'Home') set(null);
+    else return;
+    e.preventDefault();
+    savePrefs();
+  });
+}
+
+// La largeur gardée est celle qu'a retenue la mise en page (bornée)
 function setStrip(w) {
   prefs.strip = w;
   layoutStrip();
+  if (w !== null) prefs.strip = stripW;
 }
-[$('grip'), $('handleCol')].forEach(el => {
-  el.addEventListener('pointerdown', e => {
-    if (e.button) return;
-    e.preventDefault();
-    el.setPointerCapture(e.pointerId);
-    drag = { x: e.clientX, w: stripW };
-    editor.classList.add('dragging');
-  });
-  el.addEventListener('pointermove', e => { if (drag) setStrip(drag.w - (e.clientX - drag.x)); });
-  const end = () => {
-    if (!drag) return;
-    drag = null;
-    editor.classList.remove('dragging');
-    prefs.strip = stripW;
-    savePrefs();
-  };
-  el.addEventListener('pointerup', end);
-  el.addEventListener('lostpointercapture', end);
-  el.addEventListener('dblclick', () => { setStrip(null); savePrefs(); });
-});
-$('grip').addEventListener('keydown', e => {
-  const step = e.shiftKey ? 60 : 20;
-  if (e.key === 'ArrowLeft') setStrip(stripW + step);
-  else if (e.key === 'ArrowRight') setStrip(stripW - step);
-  else if (e.key === 'Home') setStrip(null);
-  else return;
-  e.preventDefault();
-  if (prefs.strip !== null) prefs.strip = stripW;
-  savePrefs();
-});
+makeResizer([$('grip'), $('handleCol')], { get: () => stripW, set: setStrip, sign: -1, cls: [editor, 'dragging'] });
 
 // ── Vers courant ──
 let curRow = -1, lastCaret = null;
@@ -575,18 +588,25 @@ function verseLinks(l, v) {
   if (g) {
     const others = [...g.lines, ...g.asso].filter(j => j !== v).sort((a, b) => a - b);
     const words = others.slice(0, 6).map(j => `${endWordOf(j)} (v.${j + 1})`).join(', ') + (others.length > 6 ? '…' : '');
-    out.push(link(g, chipLabel(l, groups), `${l.kind === 'asso' ? 'Assonance de fin avec' : 'Fin de vers, rime avec'} ${words}`));
+    out.push(link(g, chipLabel(l, groups), `${l.kind === 'asso' ? 'Assonance de fin avec' : 'Fin de vers, rime avec'} ${words}`, { asso: l.kind === 'asso' }));
   }
   l.internal.forEach(it => {
     const [pv, pw] = it.with;
     out.push(link(groups[it.group], groups[it.group].label,
-      `${spokenWord(v, it.i)} rime avec ${spokenWord(pv, pw)}${pv === v ? ' dans le même vers' : ` (v.${pv + 1})`}`, it.echo));
+      `${spokenWord(v, it.i)} rime avec ${spokenWord(pv, pw)}${pv === v ? ' dans le même vers' : ` (v.${pv + 1})`}`, { echo: it.echo }));
+  });
+  // Reprises : une ligne par mot repris de ce vers
+  const reps = prefs.repeats ? lastResult.repeats.filter(r => r.members.some(([rv]) => rv === v)) : [];
+  reps.forEach(r => {
+    const others = [...new Set(r.members.filter(([rv]) => rv !== v).map(([rv]) => `v.${rv + 1}`))];
+    const w = r.members.find(([rv]) => rv === v)[1];
+    out.push(`<p class="link"><span class="link-mark rep" data-k="${escHtml(r.key)}">↻</span> ${escHtml(spokenWord(v, w))} repris${others.length ? ` : ${others.join(', ')}` : ' dans le même vers'}</p>`);
   });
   return out.join('') || note(l.end === null ? 'Pas de voyelle : pas de rime possible.' : 'Pas de rime détectée pour ce vers.');
 }
 
-const link = (g, mark, text, echo = false) =>
-  `<p class="link"><span class="link-mark ${kc(g.ci)}${g.members ? ' f' : ''}" data-k="${escHtml(g.key)}">${escHtml(mark)}</span> ${escHtml(text)}${echo ? ' <span class="link-tag" data-tip="Rime de strophe : reliée à une fin de vers de la strophe, à toute distance">strophe</span>' : ''}</p>`;
+const link = (g, mark, text, { echo = false, asso = false } = {}) =>
+  `<p class="link"><span class="link-mark ${kc(g.ci)}${g.members ? ' f' : ''}${asso ? ' s' : ''}" data-k="${escHtml(g.key)}">${escHtml(mark)}</span> ${escHtml(text)}${echo ? ' <span class="link-tag" data-tip="Rime de strophe : reliée à une fin de vers de la strophe, à toute distance">strophe</span>' : ''}</p>`;
 
 // Rimes proposées pour le mot visé ; shownKey : le mot pour lequel les pastilles affichées ont été calculées
 let sugKey = null, shownKey = null, sugSeq = 0, sugTimer = null;
@@ -744,15 +764,16 @@ function renderCounts() {
   const n = shownTypes.filter(t => t === 'verse').length;
   const ignored = shownTypes.filter(t => t === 'comment' || t === 'section' || t === 'adlib').length;
   $('statVerses').textContent = `${n} vers`;
-  $('statIgnored').textContent = ignored ? `${ignored} ligne${ignored > 1 ? 's' : ''} ignorée${ignored > 1 ? 's' : ''}` : '';
+  $('statIgnored').textContent = ignored ? plural(ignored, 'ligne ignorée', 'lignes ignorées') : '';
 }
 
 function renderStats() {
   const info = lastResult?.info || [];
   const internal = info.reduce((a, l) => a + l.internal.length, 0);
   const echoes = info.reduce((a, l) => a + l.internal.filter(it => it.echo).length, 0);
+  const reps = prefs.repeats ? lastResult?.repeats.length ?? 0 : 0;
   $('statSyl').textContent = info.length ? `${Math.round(info.reduce((a, l) => a + l.syl, 0) / info.length)} syllabes en moyenne` : '';
-  $('statInt').textContent = info.length ? `${internal} rime${internal > 1 ? 's' : ''} interne${internal > 1 ? 's' : ''}${echoes ? `, dont ${echoes} de strophe` : ''}` : '';
+  $('statInt').textContent = info.length ? `${plural(internal, 'rime interne', 'rimes internes')}${echoes ? `, dont ${echoes} de strophe` : ''}${reps ? ` · ${plural(reps, 'mot repris', 'mots repris')}` : ''}` : '';
 }
 
 function renderLegend() {
@@ -775,9 +796,10 @@ function applyPrefs() {
   $('vowBtn').setAttribute('aria-pressed', prefs.vow && flowShown());
   $('vowBtn').disabled = !flowShown();
   $('stanzaBtn').setAttribute('aria-pressed', !!prefs.stanza);
-  document.querySelector('.body').classList.toggle('no-rail', !prefs.rail);
-  document.querySelector('.body').classList.toggle('with-lib', !!prefs.lib);
-  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
+  $('repeatBtn').setAttribute('aria-pressed', !!prefs.repeats);
+  body.classList.toggle('no-rail', !prefs.rail);
+  body.classList.toggle('with-lib', !!prefs.lib);
+  body.style.setProperty('--lib-w', `${libWidth()}px`);
   $('railBtn').setAttribute('aria-pressed', prefs.rail);
   $('libBtn').setAttribute('aria-pressed', !!prefs.lib);
   renderLegend();
@@ -820,34 +842,97 @@ $('stanzaBtn').addEventListener('click', () => {
   lastRequested = null;
   if (ta.value.trim()) analyze();
 });
+// Reprises : l'analyse les donne toujours, seul l'affichage change
+$('repeatBtn').addEventListener('click', () => {
+  prefs.repeats = !prefs.repeats;
+  prefsChanged(true);
+  renderStats();
+  renderCurrent(true);
+});
 
 // ── Menus ──
+// Le menu « Affichage » n'en est un que sur mobile : ailleurs ses bascules restent dans l'en-tête (classe open)
+const isView = m => m.classList.contains('view-tools');
+const menuOpen = m => isView(m) ? m.classList.contains('open') : !m.hidden;
+function setMenu(m, on) {
+  if (isView(m)) m.classList.toggle('open', on);
+  else m.hidden = !on;
+}
+
 function toggleMenu(btn) {
   const menu = $(btn.getAttribute('aria-controls'));
-  const open = menu.hidden;
+  const open = !menuOpen(menu);
   closeMenus();
   if (!open) return;
   if (menu.id === 'docMenu') loadGis().catch(() => {});   // prêt avant le clic : la fenêtre Google doit s'ouvrir dans le clic même
-  menu.hidden = false;
+  setMenu(menu, true);
   btn.setAttribute('aria-expanded', 'true');
 }
 
 function closeMenus() {
-  document.querySelectorAll('.menu').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.menu, .view-tools').forEach(m => setMenu(m, false));
   document.querySelectorAll('[aria-controls]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+}
+
+// Actions des menus (data-action), à la place des onclick
+const MENU_ACTIONS = {
+  save: () => saveDoc(),
+  new: () => newDoc(),
+  backup: () => exportAll(),
+  import: () => $('importInput').click(),
+  'drive-connect': () => connectDrive(),
+  'drive-sync': () => syncNow(),
+  'drive-rename': () => renameDriveFolder(),
+  'drive-stop': () => disconnectDrive(),
+  download: () => downloadText(),
+  share: () => shareText(),
+  'report-copy': () => copyReport(),
+  'report-download': () => downloadReport(),
+};
+document.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => MENU_ACTIONS[b.dataset.action]()));
+
+// ── Boîte de dialogue : confirmer, ou demander un nom (remplace confirm et prompt) ──
+// input : { label, value, placeholder, max } ; rend true/false, ou le texte saisi (null si annulé)
+function ask({ title, text = '', ok = 'OK', danger = false, input = null }) {
+  const dlg = $('ask'), field = $('askInput');
+  $('askTitle').textContent = title;
+  $('askText').textContent = text;
+  $('askText').hidden = !text;
+  $('askField').hidden = !input;
+  if (input) {
+    $('askLabel').textContent = input.label;
+    field.value = input.value ?? '';
+    field.placeholder = input.placeholder ?? '';
+    field.maxLength = input.max ?? 100;
+  }
+  $('askOk').textContent = ok;
+  $('askOk').classList.toggle('danger', danger);
+  closeMenus();
+  hideTip();
+  dlg.returnValue = '';
+  dlg.showModal();
+  if (input) field.select();
+  return new Promise(resolve => dlg.addEventListener('close', () => {
+    const yes = dlg.returnValue === 'ok';
+    resolve(input ? (yes ? field.value : null) : yes);
+  }, { once: true }));
 }
 
 // ── Textes sauvés : un texte = une entrée ──
 function isDirty() {
-  const saved = docs.find(d => d.id === doc.id);
+  const saved = savedDoc();
   return saved ? saved.text !== ta.value : !!ta.value.trim();
 }
 
 function renderDocState() {
-  const saved = docs.find(d => d.id === doc.id);
+  const saved = savedDoc();
   const state = saved ? (saved.text === ta.value ? 'Enregistré' : 'Modifié') : ta.value.trim() ? 'Non enregistré' : '';
-  $('docState').textContent = state;
-  $('docState').classList.toggle('dirty', state === 'Modifié' || state === 'Non enregistré');
+  const el = $('docState');
+  // stale : Drive a reçu une autre version pendant qu'on écrivait celle-ci (voir la synchro)
+  el.textContent = saved?.stale ? `${state} · changé sur un autre appareil` : state;
+  el.classList.toggle('dirty', state === 'Modifié' || state === 'Non enregistré');
+  el.classList.toggle('warn', !!saved?.stale);
+  el.dataset.tip = saved?.stale ? 'Ce texte a changé sur un autre appareil pendant que tu l\'écrivais ici : cette version-là est dans l\'historique (Ctrl+Maj+H). En sauvant, tu gardes les deux : la sienne devient une copie « (conflit) ».' : '';
   $('versionsBtn').disabled = !doc.id;
   $('versionsBtn').dataset.tip = doc.id ? 'Historique des versions (Ctrl+Maj+H)' : 'Sauve le texte pour commencer son historique';
   const title = docTitle(ta.value, true);
@@ -858,14 +943,20 @@ function renderDocState() {
 // ── Métadonnées du texte ouvert : dossier, tags, prods ──
 // Elles vivent sur son entrée sauvée, ou sur le brouillon tant qu'il n'est pas sauvé, et s'appliquent
 // sans « Sauver ». Sur un texte sauvé, metaPending les fait partir vers Drive sans renvoyer le contenu.
-const cur = () => docs.find(d => d.id === doc.id) || doc;
+const cur = () => savedDoc() || doc;
 const draftMeta = d => ({ folder: d.folder ?? null, tags: [...(d.tags || [])], prods: (d.prods || []).map(p => ({ ...p })), prod: d.prod ?? null });
+// Dossier d'un texte, s'il existe encore
+const folderOf = d => folderById(d.folder) ? d.folder : null;
 
-function metaChanged(target = cur()) {
-  if (target === doc) persistDraft();
-  else {
-    target.metaPending = true;
-    store('rime-history', docs);
+// Change le dossier, les tags ou les prods d'un texte (l'ouvert par défaut) : fn reçoit son entrée à jour.
+// Un brouillon les garde dans rime-current ; un texte sauvé les envoie seuls vers Drive (metaPending).
+function changeMeta(fn, id = doc.id) {
+  refreshShared();
+  if (id === doc.id && !savedDoc()) {
+    fn(doc);
+    persistDraft();
+  } else {
+    withDoc(id, d => { fn(d); d.metaPending = true; });
     requestSync();
   }
   renderLib();
@@ -876,15 +967,20 @@ function metaChanged(target = cur()) {
 function saveDoc() {
   const text = ta.value;
   if (!text.trim()) { toast('Rien à sauver'); return; }
+  refreshShared();
+  const old = savedDoc();
+  // Rien de changé : ni version ni envoi, mais la synchro va voir ce qui a pu changer ailleurs
+  if (old && old.text === text && !old.conflict) {
+    toast('Déjà enregistré ✓');
+    saveToDrive();
+    return;
+  }
   // pending : à envoyer sur Drive ; une copie « (conflit) » sauvée devient un texte ordinaire.
   // Un nouveau texte emporte le dossier, les tags et les prods du brouillon.
-  const old = docs.find(d => d.id === doc.id);
-  const { conflict, ...prev } = old || { id: Date.now(), ...draftMeta(doc) };
+  const { conflict, stale, ...prev } = old || { id: Date.now(), ...draftMeta(doc) };
   const item = { ...prev, text, updated: Date.now(), pending: true };
   // Pas de plafond : seul le quota du navigateur limite le nombre de textes sauvés
-  const next = [item, ...docs.filter(d => d.id !== item.id)];
-  if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
-  docs = next;
+  if (!mutate(() => { docs = [item, ...docs.filter(d => d.id !== item.id)]; })) return;
   doc.id = item.id;
   persistDraft();
   renderDocState();
@@ -894,9 +990,11 @@ function saveDoc() {
   saveToDrive();
 }
 
+const DISCARD = { text: 'Le texte en cours n\'est pas enregistré : ses dernières modifications seront perdues.', danger: true };
+
 // Un nouveau texte naît dans le dossier du texte ouvert
-function newDoc() {
-  if (isDirty() && !confirm('Le texte en cours n\'est pas enregistré. Commencer un nouveau texte quand même ?')) return;
+async function newDoc() {
+  if (isDirty() && !await ask({ title: 'Commencer un nouveau texte ?', ok: 'Abandonner et commencer', ...DISCARD })) return;
   const folder = cur().folder ?? null;
   setText('', null);
   doc.folder = folder;
@@ -906,10 +1004,10 @@ function newDoc() {
   ta.focus();
 }
 
-function openDoc(id) {
+async function openDoc(id) {
   const item = docs.find(d => d.id === id);
   if (!item || id === doc.id && !isDirty()) return;
-  if (isDirty() && !confirm('Le texte en cours n\'est pas enregistré. L\'abandonner pour ouvrir celui-ci ?')) return;
+  if (isDirty() && !await ask({ title: `Ouvrir « ${docTitle(item.text) || 'Sans titre'} » ?`, ok: 'Abandonner et ouvrir', ...DISCARD })) return;
   setText(item.text, id);
 }
 
@@ -918,11 +1016,15 @@ async function deleteDoc(id) {
   const item = docs.find(d => d.id === id);
   if (!item) return;
   const n = (await versionsOf(id).catch(() => [])).length;
-  const history = n > 1 ? ` et ses ${n} versions` : n ? ' et sa version' : '';
-  if (!confirm(`Supprimer « ${docTitle(item.text) || 'Sans titre'} »${history} des textes sauvés ?`)) return;
-  docs = docs.filter(d => d.id !== id);
-  store('rime-history', docs);
-  if (item.drive) { drive.trash.push(item.drive.id); saveDrive(); }
+  const history = n > 1 ? `Le texte et ses ${n} versions seront supprimés` : n ? 'Le texte et sa version seront supprimés' : 'Le texte sera supprimé';
+  if (!await ask({
+    title: `Supprimer « ${docTitle(item.text) || 'Sans titre'} » ?`, ok: 'Supprimer', danger: true,
+    text: `${history} de ce navigateur.${item.drive ? ' Dans Google Drive, ils partent à la corbeille.' : ''}`,
+  })) return;
+  if (!mutate(() => {
+    docs = docs.filter(d => d.id !== id);
+    if (item.drive) drive.trash.push(item.drive.id);
+  })) return;
   await dropDocVersions(id);
   // Le texte reste dans l'éditeur, comme un brouillon, avec son dossier, ses tags et ses prods
   if (doc.id === id) { Object.assign(doc, { id: null }, draftMeta(item)); persistDraft(); closeVersions(); }
@@ -998,35 +1100,35 @@ async function importFiles(files) {
       unreadable.push(f.name);
     }
   }
-  const texts = new Set(docs.map(d => d.text)), ids = new Set(docs.map(d => d.id));
   const idMap = new Map();   // id du texte dans la sauvegarde → id ici
   // Dossiers de la sauvegarde : retrouvés ici par leur nom, sinon créés quand un texte importé y va
   const folderNames = new Map(foundFolders.map(f => [f.id, f.name]));
-  const folderFor = fid => folderNames.has(fid) ? ensureFolder(folderNames.get(fid))?.id ?? null : null;
-  let fresh = Date.now();
+  const folderFor = fid => folderNames.has(fid) ? findOrAddFolder(folderNames.get(fid))?.id ?? null : null;
   const added = [];
-  for (const t of found) {
-    if (!t.text.trim() || texts.has(t.text)) continue;
-    texts.add(t.text);
-    let id = Number.isSafeInteger(t.id) && !ids.has(t.id) ? t.id : null;
-    while (id === null || ids.has(id)) id = fresh++;
-    ids.add(id);
-    if (t.id !== undefined) idMap.set(t.id, id);
-    const prods = (Array.isArray(t.prods) ? t.prods : []).filter(p => /^[\w-]{11}$/.test(p?.v)).map(p => ({ v: p.v, t: String(p.t || ''), bpm: validBpm(p.bpm) }));
-    added.push({
-      id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now(),
-      folder: folderFor(t.folder), tags: cleanTags(Array.isArray(t.tags) ? t.tags : []),
-      prods, prod: prods.some(p => p.v === t.prod) ? t.prod : prods[0]?.v ?? null,
-    });
-  }
+  const saved = mutate(() => {
+    const texts = new Set(docs.map(d => d.text)), ids = new Set(docs.map(d => d.id));
+    let fresh = Date.now();
+    for (const t of found) {
+      if (!t.text.trim() || texts.has(t.text)) continue;
+      texts.add(t.text);
+      let id = Number.isSafeInteger(t.id) && !ids.has(t.id) ? t.id : null;
+      while (id === null || ids.has(id)) id = fresh++;
+      ids.add(id);
+      if (t.id !== undefined) idMap.set(t.id, id);
+      const prods = (Array.isArray(t.prods) ? t.prods : []).filter(p => /^[\w-]{11}$/.test(p?.v)).map(p => ({ v: p.v, t: String(p.t || ''), bpm: validBpm(p.bpm) }));
+      added.push({
+        id, text: t.text, updated: Number.isFinite(t.updated) ? t.updated : Date.now(),
+        folder: folderFor(t.folder), tags: cleanTags(Array.isArray(t.tags) ? t.tags : []),
+        prods, prod: prods.some(p => p.v === t.prod) ? t.prod : prods[0]?.v ?? null,
+      });
+    }
+    docs = [...added, ...docs].sort((a, b) => b.updated - a.updated);
+  });
+  if (!saved) return;
   const skipped = found.length - added.length;
   const note = [skipped && `${skipped} déjà présent${skipped > 1 ? 's' : ''} ou vide${skipped > 1 ? 's' : ''}`,
     unreadable.length && `illisible : ${unreadable.join(', ')}`].filter(Boolean).join(' · ');
   if (!added.length) { toast(`Rien de nouveau à importer${note ? ` (${note})` : ''}`); return; }
-  const next = [...added, ...docs].sort((a, b) => b.updated - a.updated);
-  if (!store('rime-history', next)) { toast('Stockage du navigateur plein ou bloqué : supprime d\'anciens textes'); return; }
-  docs = next;
-  saveFolders();
   renderLib();
   // Historique : celui de la sauvegarde pour les textes importés, sinon une première version
   const known = new Set((await allVersions().catch(() => [])).map(v => v.id));
@@ -1073,16 +1175,30 @@ const folderName = id => folderById(id)?.name ?? 'Sans dossier';
 const sortedFolders = () => [...folders].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 const newFolderId = () => `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const cleanName = s => String(s ?? '').trim().replace(/\s+/g, ' ').slice(0, 80);
-const verseCount = text => text.split('\n').filter(l => rowType(l) === 'verse').length;
+
+// Ajoute un dossier, sans enregistrer : à appeler dans mutate. null si le nom est vide ou déjà pris
+function addFolder(name) {
+  const clean = cleanName(name);
+  if (!clean || folders.some(f => foldKey(f.name) === foldKey(clean))) return null;
+  const f = { id: newFolderId(), name: clean, pending: true };
+  folders.push(f);
+  prefs.libOpen[f.id] = true;
+  return f;
+}
+
+// Le dossier de ce nom (casse et accents mis à part), créé au besoin : pour l'import, dans mutate
+function findOrAddFolder(name) {
+  const clean = cleanName(name);
+  return clean ? folders.find(f => foldKey(f.name) === foldKey(clean)) || addFolder(clean) : null;
+}
 
 function createFolder(name) {
   const clean = cleanName(name);
   if (!clean) return null;
+  refreshShared();
   if (folders.some(f => foldKey(f.name) === foldKey(clean))) { toast(`Le dossier « ${clean} » existe déjà`); return null; }
-  const f = { id: newFolderId(), name: clean, pending: true };
-  folders.push(f);
-  saveFolders();
-  prefs.libOpen[f.id] = true;
+  let f = null;
+  if (!mutate(() => { f = addFolder(clean); })) return null;
   savePrefs();
   requestSync();
   renderLib();
@@ -1090,40 +1206,42 @@ function createFolder(name) {
   return f;
 }
 
-// Le dossier de ce nom (casse et accents mis à part), créé au besoin : pour l'import
-function ensureFolder(name) {
-  const clean = cleanName(name);
-  if (!clean) return null;
-  return folders.find(f => foldKey(f.name) === foldKey(clean)) || createFolder(clean);
+// Nom d'un nouveau dossier, demandé dans la boîte de dialogue
+async function askNewFolder() {
+  const name = await ask({ title: 'Nouveau dossier', ok: 'Créer', input: { label: 'Nom du dossier', placeholder: 'Par exemple : Album 01', max: 80 } });
+  return name === null ? null : createFolder(name);
 }
 
-function renameFolder(id) {
+async function renameFolder(id) {
   const f = folderById(id);
   if (!f) return;
-  const name = cleanName(prompt('Nouveau nom du dossier', f.name));
+  const name = cleanName(await ask({ title: 'Renommer le dossier', ok: 'Renommer', input: { label: 'Nouveau nom', value: f.name, max: 80 } }));
   if (!name || name === f.name) return;
-  if (folders.some(x => x !== f && foldKey(x.name) === foldKey(name))) { toast(`Le dossier « ${name} » existe déjà`); return; }
-  Object.assign(f, { name, pending: true });
-  saveFolders();
+  refreshShared();
+  if (folders.some(x => x.id !== id && foldKey(x.name) === foldKey(name))) { toast(`Le dossier « ${name} » existe déjà`); return; }
+  mutate(() => { const x = folderById(id); if (x) Object.assign(x, { name, pending: true }); });
   requestSync();
   renderLib();
   renderMeta();
 }
 
 // Ses textes passent dans « Sans dossier » ; dans Drive, le dossier vidé part à la corbeille en fin de synchro
-function deleteFolder(id) {
+async function deleteFolder(id) {
   const f = folderById(id);
   if (!f) return;
-  const inside = docs.filter(d => d.folder === id);
-  const n = inside.length;
-  if (!confirm(`Supprimer le dossier « ${f.name} » ?${n ? ` ${n > 1 ? `Ses ${n} textes passent` : 'Son texte passe'} dans « Sans dossier ».` : ''}${f.drive ? ' Dans Google Drive, le dossier vide part à la corbeille.' : ''}`)) return;
-  inside.forEach(d => { d.folder = null; d.metaPending = true; });
-  if (doc.folder === id) doc.folder = null;
-  folders = folders.filter(x => x !== f);
-  if (f.drive) { drive.trashFolders.push(f.drive); saveDrive(); }
-  saveFolders();
-  store('rime-history', docs);
-  persistDraft();
+  const n = docs.filter(d => d.folder === id).length;
+  if (!await ask({
+    title: `Supprimer le dossier « ${f.name} » ?`, ok: 'Supprimer le dossier', danger: true,
+    text: `${n ? `${n > 1 ? `Ses ${n} textes passent` : 'Son texte passe'} dans « Sans dossier » : aucun texte n'est supprimé.` : 'Le dossier est vide.'}${f.drive ? ' Dans Google Drive, le dossier vide part à la corbeille.' : ''}`,
+  })) return;
+  mutate(() => {
+    const x = folderById(id);
+    if (!x) return;
+    docs.forEach(d => { if (d.folder === id) Object.assign(d, { folder: null, metaPending: true }); });
+    folders = folders.filter(y => y.id !== id);
+    if (x.drive) drive.trashFolders.push(x.drive);
+  });
+  if (doc.folder === id) { doc.folder = null; persistDraft(); }
   requestSync();
   renderLib();
   renderMeta();
@@ -1131,10 +1249,9 @@ function deleteFolder(id) {
 
 function moveDoc(id, folderId) {
   const d = docs.find(x => x.id === id);
-  if (!d || (folderById(d.folder) ? d.folder : null) === folderId) return;
-  d.folder = folderId;
+  if (!d || folderOf(d) === folderId) return;
   if (folderId) { prefs.libOpen[folderId] = true; savePrefs(); }
-  metaChanged(d);
+  changeMeta(x => { x.folder = folderId; }, id);
   toast(`« ${docTitle(d.text) || 'Sans titre'} » rangé dans ${folderName(folderId)}`);
 }
 
@@ -1163,50 +1280,53 @@ function renderLib() {
   [...libState.filter].forEach(t => { if (!tags.includes(t)) libState.filter.delete(t); });
   const filter = [...libState.filter];
   const match = d => filter.every(t => (d.tags || []).some(x => foldKey(x) === foldKey(t)));
-  const title = d => docTitle(d.text) || 'Sans titre';
+  // Titre calculé une fois par texte, pas à chaque comparaison du tri
+  const titled = docs.map(d => ({ d, title: docTitle(d.text) || 'Sans titre' }));
   const groups = [...sortedFolders().map(f => ({ id: f.id, key: f.id, name: f.name, icon: ICONS.folder })),
     { id: null, key: '', name: 'Sans dossier', icon: ICONS.none }];
   let shown = 0;
   const tree = groups.map(g => {
-    const all = docs.filter(d => (folderById(d.folder) ? d.folder : null) === g.id);
-    const list = all.filter(match).sort((a, b) => title(a).localeCompare(title(b), 'fr'));
+    const all = titled.filter(x => folderOf(x.d) === g.id);
+    const list = all.filter(x => match(x.d)).sort((a, b) => a.title.localeCompare(b.title, 'fr'));
     shown += list.length;
     if (filter.length && !list.length) return '';
     if (!g.id && !all.length) return '';
     const open = filter.length > 0 || prefs.libOpen[g.key] !== false;
     const menu = g.id && libState.menu === `f:${g.id}`;
+    const count = filter.length ? `${list.length}/${all.length}` : all.length;
     const head = `<div class="lf">
-        <button class="lf-row" data-toggle="${escHtml(g.key)}" aria-expanded="${open}">${svgIcon(open ? ICONS.down : ICONS.right, 14, 'stroke chev')}${svgIcon(g.icon)}<span class="lf-name">${escHtml(g.name)}</span><span class="lf-count">${filter.length ? `${list.length}/${all.length}` : all.length}</span></button>
+        <button class="lf-row" data-toggle="${escHtml(g.key)}" aria-expanded="${open}">${svgIcon(open ? ICONS.down : ICONS.right, 14, 'stroke chev')}${svgIcon(g.icon)}<span class="lf-name">${escHtml(g.name)}</span><span class="lf-count" data-tip="${plural(all.length, 'texte')}">${count}</span></button>
         ${g.id ? `<button class="more" data-fmenu="${escHtml(g.id)}" aria-expanded="${!!menu}" aria-label="Actions du dossier « ${escHtml(g.name)} »">${svgIcon(ICONS.more, 16, 'stroke dots')}</button>` : ''}
       </div>`
-      + (menu ? `<div class="lib-menu"><button data-frename="${escHtml(g.id)}">Renommer…</button><button class="danger" data-fdelete="${escHtml(g.id)}">Supprimer le dossier…</button></div>` : '');
+      + (menu ? `<div class="lib-menu pop"><button data-frename="${escHtml(g.id)}">Renommer…</button><button class="danger" data-fdelete="${escHtml(g.id)}">Supprimer le dossier…</button></div>` : '');
     if (!open) return head;
-    return head + (list.map(docRow).join('') || `<p class="lib-empty">${g.id ? 'Vide. Range un texte ici avec « Déplacer vers ».' : ''}</p>`);
+    return head + (list.map(x => docRow(x.d, x.title)).join('') || `<p class="lib-empty">${g.id ? 'Vide. Range un texte ici avec « Déplacer vers ».' : ''}</p>`);
   }).join('');
   setHtml($('libTree'), tree || `<p class="lib-empty">${docs.length ? 'Aucun texte avec ces tags.' : 'Aucun texte sauvé pour l\'instant : Ctrl+S sauve le texte ouvert.'}</p>`);
   setHtml($('libTags'), tags.map(t => `<button class="tag-chip" data-ftag="${escHtml(t)}" aria-pressed="${libState.filter.has(t)}">${escHtml(t)}</button>`).join('')
     || '<span class="lib-none">Aucun tag pour l\'instant : ajoute-les dans « Ce texte ».</span>');
   $('libClear').hidden = !filter.length;
-  $('libSummary').textContent = filter.length ? `${shown} sur ${docs.length} texte${docs.length > 1 ? 's' : ''} avec ${filter.join(' + ')}` : '';
+  $('libSummary').textContent = filter.length ? `${shown} sur ${plural(docs.length, 'texte')} avec ${filter.join(' + ')}` : '';
 }
 
-function docRow(d) {
+// Destinations de « Déplacer vers » et de la liste des dossiers de « Ce texte »
+const folderChoices = () => [...sortedFolders(), { id: null, name: 'Sans dossier' }];
+
+function docRow(d, title) {
   const on = d.id === doc.id;
   const menu = libState.menu === `d:${d.id}`;
-  const title = docTitle(d.text) || 'Sans titre';
   const n = verseCount(d.text);
   const tip = `${title} · ${n} vers · modifié le ${FMT.day.format(d.updated)}${d.tags?.length ? ` · ${d.tags.join(', ')}` : ''}`;
   const up = drive.on && (d.pending || d.metaPending || !d.drive);
-  const here = folderById(d.folder) ? d.folder : null;
-  const dests = [...sortedFolders(), { id: null, name: 'Sans dossier' }].map(f => {
-    const cur = (f.id ?? null) === here;
-    return `<button data-move="${d.id}" data-to="${escHtml(f.id ?? '')}"${cur ? ' disabled' : ''}>${svgIcon(f.id ? ICONS.folder : ICONS.none, 15)}<span>${escHtml(f.name)}</span>${cur ? '<span class="here">ici</span>' : ''}</button>`;
-  }).join('');
+  const dests = menu ? folderChoices().map(f => {
+    const here = (f.id ?? null) === folderOf(d);
+    return `<button data-move="${d.id}" data-to="${escHtml(f.id ?? '')}"${here ? ' disabled' : ''}>${svgIcon(f.id ? ICONS.folder : ICONS.none, 15)}<span>${escHtml(f.name)}</span>${here ? '<span class="here">ici</span>' : ''}</button>`;
+  }).join('') : '';
   return `<div class="ld${on ? ' on' : ''}">
-      <button class="ld-open" data-open="${d.id}" aria-current="${on}" data-tip="${escHtml(tip)}">${svgIcon(ICONS.doc, 14)}<span class="ld-name">${escHtml(title)}${d.conflict ? ' <span class="doc-conflict">(conflit)</span>' : ''}</span>${up ? `<span class="ld-up" aria-label="À envoyer vers Google Drive">${svgIcon(CLOUD_UP, 14)}</span>` : ''}<span class="ld-n">${n}</span></button>
+      <button class="ld-open" data-open="${d.id}" aria-current="${on}" data-tip="${escHtml(tip)}">${svgIcon(ICONS.doc, 14)}<span class="ld-name">${escHtml(title)}${d.conflict ? ' <span class="doc-conflict">(conflit)</span>' : ''}</span>${up ? `<span class="ld-up" aria-label="À envoyer vers Google Drive">${svgIcon(CLOUD_UP, 14)}</span>` : ''}<span class="ld-n">${n} v.</span></button>
       <button class="more" data-dmenu="${d.id}" aria-expanded="${menu}" aria-label="Actions de « ${escHtml(title)} »">${svgIcon(ICONS.more, 16, 'stroke dots')}</button>
     </div>`
-    + (menu ? `<div class="lib-menu"><span class="lib-menu-label">Déplacer vers</span>${dests}<span class="lib-menu-sep"></span><button class="danger" data-ddelete="${d.id}">Supprimer le texte…</button></div>` : '');
+    + (menu ? `<div class="lib-menu pop"><span class="lib-menu-label">Déplacer vers</span>${dests}<span class="lib-menu-sep"></span><button class="danger" data-ddelete="${d.id}">Supprimer le texte…</button></div>` : '');
 }
 
 $('lib').addEventListener('click', e => {
@@ -1237,40 +1357,13 @@ $('libClear').addEventListener('click', () => { libState.filter.clear(); renderL
 // Largeur du panneau Textes : on glisse sa tranche droite, l'éditeur garde au moins 700 px avec le panneau d'analyse
 const LIB_W = 272;
 const libWidth = (w = prefs.libW) => Math.round(Math.min(Math.max(220, Math.min(560, window.innerWidth - 700)), Math.max(220, w ?? LIB_W)));
-let libDrag = null;
 
 function setLibWidth(w) {
   prefs.libW = w === null ? null : libWidth(w);
-  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
+  body.style.setProperty('--lib-w', `${libWidth()}px`);
   layoutStrip();
 }
-
-$('libGrip').addEventListener('pointerdown', e => {
-  if (e.button) return;
-  e.preventDefault();
-  $('libGrip').setPointerCapture(e.pointerId);
-  libDrag = { x: e.clientX, w: libWidth() };
-  document.querySelector('.body').classList.add('lib-resizing');
-});
-$('libGrip').addEventListener('pointermove', e => { if (libDrag) setLibWidth(libDrag.w + e.clientX - libDrag.x); });
-const endLibDrag = () => {
-  if (!libDrag) return;
-  libDrag = null;
-  document.querySelector('.body').classList.remove('lib-resizing');
-  savePrefs();
-};
-$('libGrip').addEventListener('pointerup', endLibDrag);
-$('libGrip').addEventListener('lostpointercapture', endLibDrag);
-$('libGrip').addEventListener('dblclick', () => { setLibWidth(null); savePrefs(); });
-$('libGrip').addEventListener('keydown', e => {
-  const step = e.shiftKey ? 60 : 20;
-  if (e.key === 'ArrowRight') setLibWidth(libWidth() + step);
-  else if (e.key === 'ArrowLeft') setLibWidth(libWidth() - step);
-  else if (e.key === 'Home') setLibWidth(null);
-  else return;
-  e.preventDefault();
-  savePrefs();
-});
+makeResizer([$('libGrip')], { get: () => libWidth(), set: setLibWidth, cls: [body, 'lib-resizing'] });
 $('libNewText').addEventListener('click', () => { if (narrow()) { prefs.lib = false; prefsChanged(); } newDoc(); });
 $('libNewFolder').addEventListener('click', () => {
   $('libCreate').hidden = false;
@@ -1294,12 +1387,14 @@ function renderMeta() {
   $('metaFolderBtn').setAttribute('aria-expanded', folderPick);
   $('metaFolderPick').hidden = !folderPick;
   if (folderPick) {
-    setHtml($('metaFolderPick'), [...sortedFolders(), { id: null, name: 'Sans dossier' }].map(o => {
+    setHtml($('metaFolderPick'), folderChoices().map(o => {
       const on = (o.id ?? null) === (f ? f.id : null);
       return `<button data-pick-folder="${escHtml(o.id ?? '')}" aria-pressed="${on}">${svgIcon(o.id ? ICONS.folder : ICONS.none, 15)}<span>${escHtml(o.name)}</span>${on ? svgIcon(ICONS.check, 14) : ''}</button>`;
     }).join('') + `<button data-new-folder>${svgIcon(ICONS.plus, 15)}<span>Nouveau dossier…</span></button>`);
   }
   const tags = d.tags || [];
+  // Résumé, lisible même section repliée
+  $('metaSummary').textContent = [f ? f.name : 'Sans dossier', ...tags].join(' · ');
   setHtml($('metaTags'), tags.map(t => `<span class="tag">${escHtml(t)}<button data-untag="${escHtml(t)}" aria-label="Retirer le tag « ${escHtml(t)} »">${svgIcon(ICONS.cross, 10, 'stroke thick')}</button></span>`).join('')
     || '<span class="meta-none">Aucun tag pour l\'instant.</span>');
   // Suggestions : les tags des autres textes, filtrés pendant la frappe
@@ -1317,39 +1412,32 @@ function renderMeta() {
 }
 
 function setFolder(id) {
-  const d = cur();
-  if ((folderById(d.folder) ? d.folder : null) === id) return;
-  d.folder = id;
+  if (folderOf(cur()) === id) return;
   if (id) { prefs.libOpen[id] = true; savePrefs(); }
-  metaChanged(d);
+  changeMeta(d => { d.folder = id; });
 }
 
 function addTag(raw) {
   const t = cleanTag(raw);
   $('metaTagInput').value = '';
   if (!t) { renderMeta(); return; }
-  const d = cur();
-  if (!(d.tags || []).some(x => foldKey(x) === foldKey(t))) d.tags = [...(d.tags || []), t];
-  metaChanged(d);
+  changeMeta(d => { if (!(d.tags || []).some(x => foldKey(x) === foldKey(t))) d.tags = [...(d.tags || []), t]; });
 }
 
 $('metaFolderBtn').addEventListener('click', () => { folderPick = !folderPick; renderMeta(); });
-$('metaFolderPick').addEventListener('click', e => {
+$('metaFolderPick').addEventListener('click', async e => {
   const b = e.target.closest('button');
   if (!b) return;
   folderPick = false;
-  if (b.dataset.newFolder !== undefined) {
-    const f = createFolder(prompt('Nom du nouveau dossier') || '');
-    if (f) setFolder(f.id); else renderMeta();
-  } else setFolder(b.dataset.pickFolder || null);
   renderMeta();
+  if (b.dataset.newFolder !== undefined) {
+    const f = await askNewFolder();
+    if (f) setFolder(f.id);
+  } else setFolder(b.dataset.pickFolder || null);
 });
 $('metaTags').addEventListener('click', e => {
   const b = e.target.closest('[data-untag]');
-  if (!b) return;
-  const d = cur();
-  d.tags = (d.tags || []).filter(t => t !== b.dataset.untag);
-  metaChanged(d);
+  if (b) changeMeta(d => { d.tags = (d.tags || []).filter(t => t !== b.dataset.untag); });
 });
 $('metaTagSugg').addEventListener('click', e => { const b = e.target.closest('[data-addtag]'); if (b) addTag(b.dataset.addtag); });
 $('metaTagInput').addEventListener('input', renderMeta);
@@ -1433,7 +1521,10 @@ function onPlayerState(e) {
   if (ps.playing) { ps.why = ''; startClock(); } else stopClock();
   // Titre absent (oEmbed refusé) : celui du lecteur
   const p = activeProd(), data = ytPlayer.getVideoData?.();
-  if (p && !p.t && data?.title && data.video_id === p.v) { p.t = data.title; metaChanged(cur()); return; }
+  if (p && !p.t && data?.title && data.video_id === p.v) {
+    changeMeta(d => { const x = (d.prods || []).find(y => y.v === p.v); if (x && !x.t) x.t = data.title; });
+    return;
+  }
   renderProd();
 }
 
@@ -1559,12 +1650,11 @@ function renderTapHint() {
 }
 
 function setBpm(value) {
-  const d = cur(), p = activeProd(d);
+  const p = activeProd();
   if (!p) return;
   const bpm = validBpm(value);
   if (bpm === p.bpm) { renderProd(); return; }
-  p.bpm = bpm;
-  metaChanged(d);
+  changeMeta(d => { const x = activeProd(d); if (x) x.bpm = bpm; });
 }
 
 function tapTempo() {
@@ -1599,42 +1689,44 @@ async function lookUpProd(url) {
 function addProd() {
   const a = ps.add;
   if (a?.state !== 'found') return;
-  const d = cur();
-  d.prods = [...(d.prods || []), { v: a.v, t: a.title, bpm: null }];
-  d.prod = a.v;
   Object.assign(ps, { add: null, removed: null, folded: false, taps: [] });
   $('prodUrl').value = '';
-  metaChanged(d);
+  changeMeta(d => {
+    if (!(d.prods || []).some(p => p.v === a.v)) d.prods = [...(d.prods || []), { v: a.v, t: a.title, bpm: null }];
+    d.prod = a.v;
+  });
 }
 
 function pickProd(v) {
-  const d = cur();
-  if (d.prod === v) return;
-  d.prod = v;
+  if (cur().prod === v) return;
   ps.taps = [];
-  metaChanged(d);
+  changeMeta(d => { d.prod = v; });
 }
 
 function removeProd(v) {
-  const d = cur(), prods = d.prods || [];
+  const prods = cur().prods || [];
   const index = prods.findIndex(p => p.v === v);
   if (index < 0) return;
-  const wasActive = d.prod === v;
-  d.prods = prods.filter(p => p.v !== v);
-  if (wasActive) d.prod = d.prods[Math.min(index, d.prods.length - 1)]?.v ?? null;
-  ps.removed = { prod: prods[index], index, wasActive, docId: doc.id };
-  metaChanged(d);
+  ps.removed = { prod: prods[index], index, wasActive: cur().prod === v, docId: doc.id };
+  changeMeta(d => {
+    const i = (d.prods || []).findIndex(p => p.v === v);
+    if (i < 0) return;
+    d.prods = d.prods.filter(p => p.v !== v);
+    if (d.prod === v) d.prod = d.prods[Math.min(i, d.prods.length - 1)]?.v ?? null;
+  });
 }
 
 function undoRemoveProd() {
-  const r = ps.removed, d = cur();
+  const r = ps.removed;
   if (!r || r.docId !== doc.id) return;
-  const prods = [...(d.prods || [])];
-  prods.splice(r.index, 0, r.prod);
-  d.prods = prods;
-  if (r.wasActive || !d.prod) d.prod = r.prod.v;
   ps.removed = null;
-  metaChanged(d);
+  changeMeta(d => {
+    if ((d.prods || []).some(p => p.v === r.prod.v)) return;
+    const prods = [...(d.prods || [])];
+    prods.splice(r.index, 0, r.prod);
+    d.prods = prods;
+    if (r.wasActive || !d.prod) d.prod = r.prod.v;
+  });
 }
 
 $('prodPlay').addEventListener('click', togglePlay);
@@ -1723,13 +1815,6 @@ function versionId() {
   return lastVersionId;
 }
 
-const lines = text => text ? text.split('\n') : [];
-
-function lineStats(before, after) {
-  const ops = lcsOps(lines(before), lines(after));
-  return { added: ops.filter(o => o[0] === '+').length, removed: ops.filter(o => o[0] === '-').length };
-}
-
 const newVersion = (docId, text, before, source, at = Date.now()) =>
   ({ id: versionId(), docId, at, text, source, label: '', pinned: false, stats: lineStats(before, text), drive: null });
 
@@ -1756,90 +1841,11 @@ async function addVersion(docId, text, { source = 'save', at, before } = {}) {
 async function dropDocVersions(docId) {
   const vs = await versionsOf(docId).catch(() => []);
   if (vs.length) await dropVersions(vs.map(v => v.id)).catch(() => {});
-  if (drive.vfolders[docId]) drive.trash.push(drive.vfolders[docId]);
-  else vs.forEach(v => { if (v.drive) drive.trash.push(v.drive.id); });
-  delete drive.vfolders[docId];
-  saveDrive();
-}
-
-// ── Diff : lignes (plus longue sous-suite commune), puis mots dans les lignes modifiées ──
-function lcsOps(a, b) {
-  // Début et fin communs écartés d'abord : seule la partie modifiée passe par la table
-  let p = 0, s = 0;
-  while (p < a.length && p < b.length && a[p] === b[p]) p++;
-  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
-  const x = a.slice(p, a.length - s), y = b.slice(p, b.length - s), n = x.length, m = y.length;
-  const ops = a.slice(0, p).map(t => ['=', t]);
-  if (n * m > 4e6) {   // texte piégé : tout retiré puis tout ajouté, sans table géante
-    x.forEach(t => ops.push(['-', t]));
-    y.forEach(t => ops.push(['+', t]));
-  } else {
-    const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    let i = 0, j = 0;
-    while (i < n && j < m) {
-      if (x[i] === y[j]) { ops.push(['=', x[i]]); i++; j++; }
-      else if (dp[i + 1][j] >= dp[i][j + 1]) ops.push(['-', x[i++]]);
-      else ops.push(['+', y[j++]]);
-    }
-    while (i < n) ops.push(['-', x[i++]]);
-    while (j < m) ops.push(['+', y[j++]]);
-  }
-  return ops.concat(a.slice(a.length - s).map(t => ['=', t]));
-}
-
-// Mots d'une ligne modifiée, espaces compris : [{ k: '=' | '-' | '+', t }]
-function wordOps(a, b) {
-  const segs = [];
-  for (const [k, t] of lcsOps(a.split(/(\s+)/).filter(Boolean), b.split(/(\s+)/).filter(Boolean))) {
-    const last = segs[segs.length - 1];
-    if (last?.k === k) last.t += t;
-    else segs.push({ k, t });
-  }
-  return segs;
-}
-
-// Chaque rangée porte ses deux rendus : côte à côte (left, right) et fusionné (segs)
-function diffRows(oldLines, newLines) {
-  const ops = lcsOps(oldLines, newLines), rows = [];
-  let k = 0, ln = 0, rn = 0;
-  while (k < ops.length) {
-    if (ops[k][0] === '=') {
-      const seg = [{ k: '=', t: ops[k][1] }];
-      rows.push({ kind: 'same', ln: ++ln, rn: ++rn, left: seg, right: seg, segs: seg });
-      k++;
-      continue;
-    }
-    const dels = [], adds = [];
-    while (k < ops.length && ops[k][0] !== '=') { (ops[k][0] === '-' ? dels : adds).push(ops[k][1]); k++; }
-    for (let x = 0; x < Math.max(dels.length, adds.length); x++) {
-      if (x < dels.length && x < adds.length) {
-        const w = wordOps(dels[x], adds[x]);
-        rows.push({ kind: 'mod', ln: ++ln, rn: ++rn, left: w.filter(s => s.k !== '+'), right: w.filter(s => s.k !== '-'), segs: w });
-      } else if (x < dels.length) {
-        const seg = [{ k: '-', t: dels[x] }];
-        rows.push({ kind: 'del', ln: ++ln, rn: '', left: seg, right: [], segs: seg });
-      } else {
-        const seg = [{ k: '+', t: adds[x] }];
-        rows.push({ kind: 'add', ln: '', rn: ++rn, left: [], right: seg, segs: seg });
-      }
-    }
-  }
-  return rows;
-}
-
-// Les lignes identiques à plus d'une ligne d'un changement sont repliées (sauf celles dépliées d'un clic)
-function foldRows(rows, unfolded) {
-  const near = rows.map((r, i) => rows.slice(Math.max(0, i - 1), i + 2).some(x => x.kind !== 'same'));
-  const out = [];
-  for (let i = 0; i < rows.length;) {
-    let j = i;
-    while (j < rows.length && !near[j]) j++;
-    if (j - i >= 2 && !unfolded.has(i)) { out.push({ kind: 'fold', from: i, n: j - i }); i = j; }
-    else if (j > i) { out.push(...rows.slice(i, j)); i = j; }
-    else out.push(rows[i++]);
-  }
-  return out;
+  mutate(() => {
+    if (drive.vfolders[docId]) drive.trash.push(drive.vfolders[docId]);
+    else vs.forEach(v => { if (v.drive) drive.trash.push(v.drive.id); });
+    delete drive.vfolders[docId];
+  });
 }
 
 const segHtml = segs => segs.map(s => s.k === '-' ? `<del>${escHtml(s.t)}</del>` : s.k === '+' ? `<ins>${escHtml(s.t)}</ins>` : escHtml(s.t)).join('');
@@ -1858,7 +1864,7 @@ async function schemeHtml(text) {
   const html = data.info.map((l, i) => {
     const g = data.groups[l.group];
     const gap = i && l.stanza !== data.info[i - 1].stanza ? '<span class="gap"></span>' : '';
-    return gap + (g ? `<span class="${kc(g.ci)}">${escHtml(chipLabel(l, data.groups))}</span>` : '<span>·</span>');
+    return gap + (g ? `<span class="${kc(g.ci)}${l.kind === 'asso' ? ' s' : ''}">${escHtml(chipLabel(l, data.groups))}</span>` : '<span>·</span>');
   }).join('');
   if (schemeCache.size > 50) schemeCache.clear();
   schemeCache.set(text, html);
@@ -1914,10 +1920,10 @@ async function openVersions() {
   pauseProd('versions');
   vstate.checked.clear();
   vstate.unfolded.clear();
-  document.querySelector('.body').classList.add('versions');
+  body.classList.add('versions');
   $('versionsBtn').setAttribute('aria-pressed', 'true');
   // Texte sauvé avant que les versions existent : il devient la première
-  const saved = docs.find(d => d.id === doc.id);
+  const saved = savedDoc();
   if (saved && !(await versionsOf(doc.id).catch(() => [])).length) await addVersion(doc.id, saved.text, { at: saved.updated });
   await loadVersions();
 }
@@ -1925,7 +1931,7 @@ async function openVersions() {
 function closeVersions() {
   if (!vstate.open) return;
   vstate.open = false;
-  document.querySelector('.body').classList.remove('versions');
+  body.classList.remove('versions');
   $('versionsBtn').setAttribute('aria-pressed', 'false');
   layoutStrip();
   ta.focus({ preventScroll: true });
@@ -1958,20 +1964,20 @@ function renderVersions() {
 const CLOUD_OK = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M6.3 9.4l1.3 1.3 2.3-2.4';
 const CLOUD_UP = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 11V7.6 M6.6 9 8 7.6 9.4 9';
 const CLOUD_WARN = 'M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 7.6v1.6 M8 10.9v.1';
-const STAR = '<svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>';
+const STAR = svgIcon('M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z', 17, 'star');
 
 function renderVersionList() {
   const { list, sel, checked } = vstate;
-  const saved = docs.find(d => d.id === doc.id)?.text;
+  const saved = savedDoc()?.text;
   const inDrive = list.filter(v => v.drive).length;
-  $('vStorage').textContent = `${list.length} version${list.length > 1 ? 's' : ''} · ${formatBytes(vstate.bytes)}`
+  $('vStorage').textContent = `${plural(list.length, 'version')} · ${formatBytes(vstate.bytes)}`
     + (drive.on ? ` · ${inDrive} sur ${list.length} dans Google Drive` : '');
   let day = '';
   $('vList').innerHTML = list.map(v => {
     const label = dayLabel(v.at);
     const head = label !== day ? `<div class="vr-day">${escHtml(day = label)}</div>` : '';
     const drv = drive.on
-      ? `<span class="vi-drive" data-tip="${v.drive ? 'Sauvegardée dans Google Drive' : 'À envoyer vers Google Drive'}"><svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="${v.drive ? CLOUD_OK : CLOUD_UP}"/></svg></span>` : '';
+      ? `<span class="vi-drive" data-tip="${v.drive ? 'Sauvegardée dans Google Drive' : 'À envoyer vers Google Drive'}">${svgIcon(v.drive ? CLOUD_OK : CLOUD_UP, 18)}</span>` : '';
     return `${head}<div class="vitem${v.id === sel ? ' on' : ''}">
       <input type="checkbox" data-check="${v.id}" aria-label="Sélectionner la version de ${hhmm(v.at)}"${v.pinned ? ' disabled data-tip="Version épinglée : protégée"' : ''}${checked.has(v.id) ? ' checked' : ''}>
       <button class="vi-main" data-pick="${v.id}" aria-current="${v.id === sel}">
@@ -2022,7 +2028,7 @@ function renderCompare() {
   const prev = list[list.indexOf(v) + 1];
   const dirty = isDirty();
   const [oldText, newText] = cmp === 'prev' ? [prev?.text ?? '', v.text] : [v.text, ta.value];
-  const rows = diffRows(lines(oldText), lines(newText));
+  const rows = diffRows(splitLines(oldText), splitLines(newText));
   const same = rows.every(r => r.kind === 'same');
   const added = rows.filter(r => r.kind === 'add' || r.kind === 'mod').length;
   const removed = rows.filter(r => r.kind === 'del' || r.kind === 'mod').length;
@@ -2078,9 +2084,11 @@ async function updateVersion(id, change) {
 async function deleteCheckedVersions() {
   const ids = [...vstate.checked].filter(id => vstate.list.some(v => v.id === id && !v.pinned));
   if (!ids.length) return;
-  if (!confirm(`Supprimer ${ids.length} version${ids.length > 1 ? 's' : ''} ?${drive.on ? ' Elles partiront aussi à la corbeille de Google Drive.' : ''}`)) return;
-  vstate.list.filter(v => ids.includes(v.id) && v.drive).forEach(v => drive.trash.push(v.drive.id));
-  saveDrive();
+  if (!await ask({
+    title: `Supprimer ${plural(ids.length, 'version')} ?`, ok: 'Supprimer', danger: true,
+    text: `Elles quittent l'historique de ce texte.${drive.on ? ' Dans Google Drive, elles partent à la corbeille.' : ''}`,
+  })) return;
+  mutate(() => vstate.list.filter(v => ids.includes(v.id) && v.drive).forEach(v => drive.trash.push(v.drive.id)));
   await dropVersions(ids).catch(() => {});
   vstate.checked.clear();
   await loadVersions();
@@ -2141,25 +2149,39 @@ $('cmpRows').addEventListener('click', e => {
 // ── Google Drive : un .txt par texte sauvé, dans un dossier « Rime » ──
 // Accès limité aux fichiers créés par Rime (drive.file). Sans serveur, Google ne donne qu'un jeton d'une heure,
 // gardé dans ce navigateur pour survivre à un rechargement. Passé ce délai, la sauvegarde suivante rouvre la
-// fenêtre Google, qui se referme seule si la session Google est ouverte.
+// fenêtre Google, qui se referme seule si la session Google est ouverte. Au chargement, un bandeau propose de se
+// reconnecter tout de suite : écrire sur une version dépassée finirait en copie « (conflit) ».
 const GOOGLE_CLIENT_ID = '380243851119-hod3g0vlnqsgnkquhglen3ppsqi015or.apps.googleusercontent.com';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
-// on : synchro activée ; folder, folderName : le dossier des textes (choisi par l'utilisateur, « Rime » par défaut) ;
-// wantedName : nom demandé, appliqué à la prochaine synchro ; trash : fichiers ou dossiers supprimés ici, à mettre à la corbeille ;
-// vroot : le dossier « Versions » ; vfolders : { id du texte : dossier de ses versions } ;
-// email : le compte Google, pour que la fenêtre Google le choisisse seule ;
-// trashFolders : dossiers de textes supprimés ici, mis à la corbeille de Drive une fois vides
-const drive = { on: false, folder: null, folderName: '', wantedName: '', trash: [], trashFolders: [], vroot: null, vfolders: {}, ...stored('rime-drive', {}) };
+// drive (état partagé, en tête du fichier) — on : synchro activée ; folder, folderName : le dossier des textes
+// (choisi par l'utilisateur, « Rime » par défaut) ; wantedName : nom demandé, appliqué à la prochaine synchro ;
+// trash : fichiers ou dossiers supprimés ici, à mettre à la corbeille ; vroot : le dossier « Versions » ;
+// vfolders : { id du texte : dossier de ses versions } ; email : le compte Google, pour que la fenêtre Google
+// le choisisse seule ; trashFolders : dossiers de textes supprimés ici, mis à la corbeille de Drive une fois vides.
+// Lien d'un texte à son fichier : d.drive = { id, rev, sum }, rev étant la version du fichier et sum l'empreinte
+// du texte identique des deux côtés à la dernière synchro.
 const FOLDER_TYPE = 'application/vnd.google-apps.folder';
-const saveDrive = () => store('rime-drive', drive);
-let driveToken = (() => {
-  const t = stored('rime-drive-token', null);
-  return t?.exp > Date.now() ? t : null;
-})();
-let driveStatus = { state: 'auth', at: null, error: '' };   // idle | sync | auth | error
+const storedToken = () => { const t = stored('rime-drive-token', null); return t?.exp > Date.now() ? t : null; };
+let driveToken = storedToken();
+const hasToken = () => driveToken?.exp > Date.now();
+let driveStatus = { state: drive.on && !hasToken() ? 'auth' : 'idle', at: null, error: '' };   // idle | sync | auth | error
 let syncing = null, syncAgain = false, syncTimer = null, lastSync = 0, tokenClient = null, gisLoading = null;
 let authDeclined = false;   // fenêtre Google fermée sans se connecter : la sauvegarde ne la rouvre plus d'elle-même
+let bannerClosed = false;   // bandeau de reconnexion fermé : il ne revient pas avant le rechargement
+
+// Empreinte d'un texte (cyrb53) : dit quel côté a changé depuis la dernière synchro, sans garder le texte deux fois
+function textSum(s) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
 
 // Script Google chargé seulement si Drive sert
 function loadGis() {
@@ -2174,10 +2196,7 @@ function loadGis() {
 
 // Ouvre la fenêtre Google « Autoriser » : à appeler dans un clic, sinon le navigateur la bloque
 function connectDrive() {
-  if (!drive.on) {
-    drive.wantedName = $('driveFolderName').value.trim();
-    saveDrive();
-  }
+  if (!drive.on) mutate(() => { drive.wantedName = $('driveFolderName').value.trim(); });
   const oauth = window.google?.accounts?.oauth2;
   if (!oauth) {
     loadGis().then(() => toast('Google est prêt : clique à nouveau'), () => toast('Impossible de joindre Google'));
@@ -2189,9 +2208,9 @@ function connectDrive() {
     callback: resp => {
       if (resp.error || !oauth.hasGrantedAllScopes(resp, DRIVE_SCOPE)) { toast('Accès à Google Drive refusé'); return; }
       driveToken = { value: resp.access_token, exp: Date.now() + (resp.expires_in - 60) * 1000 };
-      store('rime-drive-token', driveToken);
+      store('rime-drive-token', driveToken);   // les autres onglets le reprennent (événement storage)
       authDeclined = false;
-      if (!drive.on) { drive.on = true; saveDrive(); }
+      if (!drive.on) mutate(() => { drive.on = true; });
       syncDrive();
     },
     error_callback: e => {
@@ -2209,22 +2228,23 @@ function saveToDrive() {
   else requestSync();
 }
 
-const hasToken = () => driveToken?.exp > Date.now();
 const syncNow = () => hasToken() ? syncDrive() : connectDrive();
 
-function disconnectDrive() {
-  if (!confirm('Arrêter la synchro avec Google Drive ? Tes textes restent dans ton Drive et dans ce navigateur.')) return;
+async function disconnectDrive() {
+  if (!await ask({ title: 'Arrêter la synchro avec Google Drive ?', text: 'Tes textes restent dans ton Drive et dans ce navigateur.', ok: 'Arrêter la synchro' })) return;
   if (driveToken) window.google?.accounts?.oauth2?.revoke(driveToken.value, () => {});
   dropDriveToken();
-  Object.assign(drive, { on: false, folder: null, folderName: '', wantedName: '', trash: [], trashFolders: [], vroot: null, vfolders: {}, email: undefined });
-  saveDrive();
   // Plus de lien : à la reconnexion, les fichiers et dossiers sont retrouvés par l'id qu'ils portent
-  docs.forEach(d => { delete d.drive; });
-  store('rime-history', docs);
-  folders.forEach(f => { delete f.drive; });
-  saveFolders();
+  mutate(() => {
+    Object.keys(drive).forEach(k => delete drive[k]);
+    Object.assign(drive, structuredClone(DRIVE_DEFAULTS));
+    docs.forEach(d => { delete d.drive; });
+    folders.forEach(f => { delete f.drive; });
+  });
   resetVersionLinks();
   renderDrive();
+  renderLib();
+  renderMeta();
 }
 
 async function resetVersionLinks() {
@@ -2262,15 +2282,20 @@ async function driveApi(path, { method = 'GET', json, upload, raw = false } = {}
   return raw ? res.text() : res.json();
 }
 
+// Le texte d'un fichier, fins de ligne normalisées
+const driveText = async id => (await driveApi(`files/${id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+
 // Le dossier des textes : celui de la dernière synchro, sinon celui que Rime a déjà créé, sinon un nouveau.
 // Rime ne voit que les dossiers qu'il a créés : il retrouve le sien même déplacé ou renommé dans Drive.
 async function driveFolder() {
   let f = drive.folder && await driveApi(`files/${drive.folder}?fields=id,name,trashed,appProperties`);
   if (!f || f.trashed) {
     // Dossier perdu (supprimé, autre compte) : les anciens liens ne valent plus, rien n'est effacé ici
-    docs.forEach(d => { delete d.drive; });
-    folders.forEach(f => { delete f.drive; });
-    Object.assign(drive, { trash: [], trashFolders: [], vroot: null, vfolders: {} });
+    mutate(() => {
+      docs.forEach(d => { delete d.drive; });
+      folders.forEach(x => { delete x.drive; });
+      Object.assign(drive, { trash: [], trashFolders: [], vroot: null, vfolders: {} });
+    });
     await resetVersionLinks();
     // Le dossier principal porte la marque « root » ; un dossier d'avant les marques est le plus ancien sans marque
     const found = await driveFolders();
@@ -2281,8 +2306,7 @@ async function driveFolder() {
   if (drive.wantedName && f.name !== drive.wantedName) {
     f = await driveApi(`files/${f.id}?fields=id,name`, { method: 'PATCH', json: { name: drive.wantedName } }) ?? f;
   }
-  Object.assign(drive, { folder: f.id, folderName: f.name, wantedName: '' });
-  saveDrive();
+  mutate(() => Object.assign(drive, { folder: f.id, folderName: f.name, wantedName: '' }));
   return f.id;
 }
 
@@ -2307,10 +2331,9 @@ async function driveList() {
 }
 
 async function renameDriveFolder() {
-  const name = prompt('Nouveau nom du dossier dans ton Drive', drive.folderName || 'Rime')?.trim();
+  const name = (await ask({ title: 'Renommer le dossier dans ton Drive', ok: 'Renommer', input: { label: 'Nouveau nom', value: drive.folderName || 'Rime', max: 100 } }))?.trim();
   if (!name || name === drive.folderName) return;
-  drive.wantedName = name;   // appliqué par la synchro, même après une reconnexion
-  saveDrive();
+  mutate(() => { drive.wantedName = name; });   // appliqué par la synchro, même après une reconnexion
   syncNow();
 }
 
@@ -2354,11 +2377,14 @@ function parseDescription(text) {
 
 const metaSig = d => JSON.stringify([d.folder ?? null, d.tags || [], d.prods || [], d.prod ?? null]);
 
-// Envoie un texte : son contenu s'il a changé (pending), sinon ses seules métadonnées (description, dossier).
+// Envoie un texte, retrouvé par son id : son contenu s'il a changé (pending), sinon ses seules métadonnées.
 // Sans fichier, ou s'il a disparu, un fichier est créé, qui porte l'id du texte. parent : le dossier Drive voulu ;
 // le fichier n'est déplacé que si son dossier a changé ici (un fichier sorti du dossier de Rime y reste sinon).
-async function drivePush(d, parent, f = null) {
-  const { id, text, pending } = d;
+async function drivePush(id, parent, f = null) {
+  refreshShared();
+  const d = docs.find(x => x.id === id);
+  if (!d) return;
+  const { text, pending } = d;
   const sig = metaSig(d);
   const meta = { name: driveName(d), description: metaDescription(d) };
   const was = f?.parents || [];
@@ -2366,16 +2392,19 @@ async function drivePush(d, parent, f = null) {
   let r = d.drive && (pending
     ? await driveApi(`files/${d.drive.id}?uploadType=multipart&fields=id,version${move}`, { method: 'PATCH', upload: { meta, text } })
     : await driveApi(`files/${d.drive.id}?fields=id,version${move}`, { method: 'PATCH', json: meta }));
+  const sent = pending || !r;   // le contenu est parti : avec le fichier créé, ou avec la modification
   r ||= await driveApi('files?uploadType=multipart&fields=id,version', {
     method: 'POST',
     upload: { meta: { ...meta, mimeType: 'text/plain', parents: [parent], appProperties: { rimeId: String(id) } }, text },
   });
   // Le texte a pu être sauvé, rangé ou supprimé pendant l'envoi : on le retrouve par son id
-  const now = docs.find(x => x.id === id);
-  if (!now) { drive.trash.push(r.id); return; }
-  now.drive = { id: r.id, rev: r.version };
-  if (now.text === text) now.pending = false;
-  if (metaSig(now) === sig) now.metaPending = false;
+  mutate(() => {
+    const now = docs.find(x => x.id === id);
+    if (!now) { drive.trash.push(r.id); return; }
+    now.drive = { id: r.id, rev: r.version, sum: sent ? textSum(text) : d.drive?.sum };
+    if (now.text === text) now.pending = false;
+    if (metaSig(now) === sig) now.metaPending = false;
+  });
 }
 
 // Dossiers de textes : sous-dossiers du dossier de Rime, marqués rime: 'folder' et rimeFolder: <id>.
@@ -2383,45 +2412,60 @@ async function drivePush(d, parent, f = null) {
 async function syncFolders(root, all) {
   const remote = all.filter(f => f.appProperties?.rime === 'folder');
   const seen = new Set();
-  for (const lf of [...folders]) {
+  refreshShared();
+  for (const id of folders.map(f => f.id)) {
+    refreshShared();
+    const lf = folderById(id);
+    if (!lf) continue;
     let f = remote.find(x => x.id === lf.drive) || remote.find(x => x.appProperties.rimeFolder === lf.id);
     if (!f && lf.drive && !lf.pending) {
       // Supprimé dans Drive (ses fichiers sont partis à la corbeille avec lui) : il disparaît ici aussi
-      folders = folders.filter(x => x !== lf);
-      docs.forEach(d => { if (d.folder === lf.id) d.folder = null; });
+      mutate(() => {
+        folders = folders.filter(x => x.id !== id);
+        docs.forEach(d => { if (d.folder === id) d.folder = null; });
+      });
       continue;
     }
+    // sent : le nom envoyé (dossier créé ou renommé ici) ; sinon le nom de Drive l'emporte
+    const sent = !f || lf.pending ? lf.name : null;
     if (!f) {
       f = await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: lf.name, mimeType: FOLDER_TYPE, parents: [root], appProperties: { rime: 'folder', rimeFolder: lf.id } } });
-    } else if (f.name !== lf.name) {
-      if (lf.pending) await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: lf.name } });
-      else lf.name = f.name;   // renommé dans Drive
+    } else if (lf.pending && f.name !== lf.name) {
+      await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: lf.name } });
     }
-    Object.assign(lf, { drive: f.id, pending: false });
+    mutate(() => {
+      const x = folderById(id);
+      if (!x) return;
+      if (sent === null) { if (!x.pending) x.name = f.name; }   // renommé dans Drive, sauf si renommé ici entre-temps
+      else x.pending = x.name !== sent;
+      x.drive = f.id;
+    });
     seen.add(f.id);
   }
   // Dossiers créés sur un autre appareil
-  for (const f of remote) {
-    if (seen.has(f.id) || drive.trashFolders.includes(f.id)) continue;
-    const id = f.appProperties.rimeFolder || newFolderId();
-    if (!folders.some(x => x.id === id)) folders.push({ id, name: f.name, drive: f.id });
-  }
-  saveFolders();
+  mutate(() => {
+    for (const f of remote) {
+      if (seen.has(f.id) || drive.trashFolders.includes(f.id) || folders.some(x => x.drive === f.id)) continue;
+      const id = f.appProperties.rimeFolder || newFolderId();
+      if (!folders.some(x => x.id === id)) folders.push({ id, name: f.name, drive: f.id });
+    }
+  });
   return new Map(folders.filter(f => f.drive).map(f => [f.drive, f.id]));
 }
 
 // Dossiers supprimés ici : à la corbeille de Drive, une fois vidés de leurs textes
 async function trashEmptyFolders() {
+  refreshShared();
   for (const id of [...drive.trashFolders]) {
     const q = encodeURIComponent(`'${id}' in parents and trashed = false`);
     const inside = (await driveApi(`files?q=${q}&pageSize=1&fields=files(id)`))?.files || [];
     if (inside.length) continue;   // un texte y est encore (envoi en attente) : la prochaine synchro réessaiera
     await driveApi(`files/${id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
-    drive.trashFolders = drive.trashFolders.filter(x => x !== id);
-    saveDrive();
+    mutate(() => { drive.trashFolders = drive.trashFolders.filter(x => x !== id); });
   }
 }
 
+// Ajoute un texte venu de Drive : à appeler dans mutate
 function addDoc(fields) {
   const ids = new Set(docs.map(d => d.id));
   let id = Number.isSafeInteger(fields.id) && !ids.has(fields.id) ? fields.id : Date.now();
@@ -2431,96 +2475,128 @@ function addDoc(fields) {
   return d;
 }
 
+// Chaque étape relit l'état partagé et enregistre aussitôt ce qu'elle change (mutate, withDoc) : un autre onglet
+// peut sauver, ranger ou supprimer pendant que les requêtes partent.
 async function runDriveSync() {
   const root = await driveFolder();
   // 1. Les textes supprimés dans Rime vont à la corbeille de Drive (récupérables 30 jours)
+  refreshShared();
   for (const id of [...drive.trash]) {
     await driveApi(`files/${id}?fields=id`, { method: 'PATCH', json: { trashed: true } });
-    drive.trash = drive.trash.filter(x => x !== id);
-    saveDrive();
+    mutate(() => { drive.trash = drive.trash.filter(x => x !== id); });
   }
   // 2. Les dossiers, avant les textes qu'ils contiennent
-  const folderOf = await syncFolders(root, await driveFolders());
+  const folderMap = await syncFolders(root, await driveFolders());
   const parentOf = d => folderById(d.folder)?.drive || root;
   // Dossier d'un fichier : la racine, un sous-dossier connu, sinon (parent hors de Rime) celui d'ici
   const remoteFolder = (f, fallback) => {
     const parents = f.parents || [];
     if (parents.includes(root)) return null;
-    return parents.map(x => folderOf.get(x)).find(Boolean) ?? fallback;
+    return parents.map(x => folderMap.get(x)).find(Boolean) ?? fallback;
   };
   // Dossier, tags et prods de Drive, sauf s'ils ont changé ici depuis
   const pullMeta = (d, f) => {
     if (!d.metaPending) Object.assign(d, parseDescription(f.description), { folder: remoteFolder(f, d.folder ?? null) });
   };
+  const metaToSend = id => docs.find(x => x.id === id)?.metaPending;
   const files = await driveList();
   const remote = files.filter(f => !f.appProperties.rimeVersion);
   const byId = new Map(remote.map(f => [f.id, f]));
   const byRime = new Map(remote.map(f => [f.appProperties?.rimeId, f]));
   const seen = new Set();
+
   // 3. Chaque texte sauvé face à son fichier
+  refreshShared();
   for (const id of docs.map(d => d.id)) {
+    refreshShared();
     let d = docs.find(x => x.id === id);
     if (!d) continue;
     const f = (d.drive && byId.get(d.drive.id)) || byRime.get(String(id));
     if (!f) {
       // Fichier supprimé dans Drive : le texte suit, avec son historique, sauf s'il a des modifications à envoyer
       if (d.drive && !d.pending && !d.metaPending) {
-        docs = docs.filter(x => x !== d);
+        mutate(() => { docs = docs.filter(x => x.id !== id); });
         if (doc.id === id) { doc.id = null; persistDraft(); closeVersions(); }
         await dropDocVersions(id);
         continue;
       }
-      delete d.drive;
-      await drivePush(d, parentOf(d));
+      withDoc(id, x => { delete x.drive; });
+      await drivePush(id, parentOf(d));
       continue;
     }
     seen.add(f.id);
     if (d.drive?.id === f.id && d.drive.rev === f.version) {
-      if (d.pending || d.metaPending) await drivePush(d, parentOf(d), f);
+      if (d.pending || d.metaPending) await drivePush(id, parentOf(d), f);
       continue;
     }
-    // Modifié dans Drive (ou pas encore relié) : on compare les textes
-    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+    // Le fichier a changé dans Drive (ou n'est pas encore relié) : son texte dit ce qui a vraiment changé
+    const text = await driveText(f.id);
+    refreshShared();
     d = docs.find(x => x.id === id);
     if (!d) continue;
+    const link = { id: f.id, rev: f.version, sum: textSum(text) };
     if (text === d.text) {
-      d.drive = { id: f.id, rev: f.version };
-      d.pending = false;
-      pullMeta(d, f);
-      if (d.metaPending) await drivePush(d, parentOf(d), f);
+      withDoc(id, x => { Object.assign(x, { drive: link, pending: false, stale: false }); pullMeta(x, f); });
+      if (metaToSend(id)) await drivePush(id, parentOf(d), f);
+      continue;
+    }
+    // Base : l'empreinte du texte identique des deux côtés à la dernière synchro. Le côté resté sur la base cède
+    // la place à l'autre. Sans base (texte d'avant les empreintes), « à envoyer » dit si le texte d'ici a changé.
+    const base = d.drive?.id === f.id ? d.drive.sum : undefined;
+    const mineChanged = base ? textSum(d.text) !== base : !!d.pending;
+    const theirsChanged = base ? link.sum !== base : true;
+    if (!theirsChanged) {
+      // Drive n'a changé que de numéro de version (description modifiée, ou Drive lui-même) : notre texte part
+      withDoc(id, x => { Object.assign(x, { drive: { ...link, sum: base }, pending: true }); pullMeta(x, f); });
+      await drivePush(id, parentOf(d), f);
+      continue;
+    }
+    if (!mineChanged && id === doc.id && isDirty()) {
+      // Modifications non sauvées, écrites sur l'ancienne version : on n'y touche pas. La version de Drive va
+      // dans l'historique et l'en-tête prévient ; « Sauver » gardera les deux (copie « (conflit) »).
+      await addVersion(id, text, { source: 'drive', at: remoteTime(f) });
+      withDoc(id, x => { x.stale = true; pullMeta(x, f); });
       continue;
     }
     // Avant tout remplacement, la version d'ici est gardée dans l'historique
     await addVersion(id, d.text, { source: 'drive', at: d.updated });
+    refreshShared();
     d = docs.find(x => x.id === id);
     if (!d) continue;
-    const editing = d.id === doc.id && isDirty();
-    if (!d.pending && !editing) {
-      Object.assign(d, { text, updated: remoteTime(f), drive: { id: f.id, rev: f.version } });
-      pullMeta(d, f);
-      if (d.metaPending) await drivePush(d, parentOf(d), f);
-      if (d.id === doc.id) {
-        setText(text, d.id);
+    if (!mineChanged) {
+      withDoc(id, x => { Object.assign(x, { text, updated: remoteTime(f), drive: link, pending: false, stale: false }); pullMeta(x, f); });
+      if (metaToSend(id)) await drivePush(id, parentOf(d), f);
+      if (id === doc.id) {
+        setText(text, id);
         toast(`« ${docTitle(text) || 'Sans titre'} » mis à jour depuis Drive`);
       }
       continue;
     }
-    if (!d.pending) { pullMeta(d, f); continue; }   // modifications non sauvées dans l'éditeur : on attend « Sauver »
     // Modifié des deux côtés : la version de Drive devient une copie « (conflit) », la nôtre part sur le fichier
-    d.drive = { id: f.id, rev: f.version };
-    const copy = addDoc({ text, updated: remoteTime(f), conflict: true, pending: true, ...parseDescription(f.description), folder: remoteFolder(f, d.folder ?? null) });
-    await addVersion(copy.id, text, { source: 'drive', at: copy.updated });
-    await drivePush(d, parentOf(d), f);
+    let copy = null;
+    mutate(() => {
+      const x = docs.find(y => y.id === id);
+      if (!x) return;
+      Object.assign(x, { drive: { id: f.id, rev: f.version, sum: base }, pending: true, stale: false });
+      copy = addDoc({ text, updated: remoteTime(f), conflict: true, pending: true, ...parseDescription(f.description), folder: remoteFolder(f, x.folder ?? null) });
+    });
+    if (copy) await addVersion(copy.id, text, { source: 'drive', at: copy.updated });
+    await drivePush(id, parentOf(d), f);
   }
   // 4. Les fichiers inconnus ici : textes sauvés depuis un autre appareil
   for (const f of remote) {
+    refreshShared();
     if (seen.has(f.id) || drive.trash.includes(f.id) || docs.some(d => d.drive?.id === f.id)) continue;
-    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
-    if (docs.some(d => d.drive?.id === f.id)) continue;
-    addDoc({ id: Number(f.appProperties?.rimeId), text, updated: remoteTime(f), drive: { id: f.id, rev: f.version }, ...parseDescription(f.description), folder: remoteFolder(f, null) });
+    const text = await driveText(f.id);
+    mutate(() => {
+      if (drive.trash.includes(f.id) || docs.some(d => d.drive?.id === f.id)) return;
+      addDoc({ id: Number(f.appProperties?.rimeId), text, updated: remoteTime(f), drive: { id: f.id, rev: f.version, sum: textSum(text) },
+        ...parseDescription(f.description), folder: remoteFolder(f, null) });
+    });
   }
   // 5. Les copies « (conflit) » créées plus haut
-  for (const d of docs.filter(x => !x.drive)) await drivePush(d, parentOf(d));
+  refreshShared();
+  for (const d of docs.filter(x => !x.drive)) await drivePush(d.id, parentOf(d));
   // 6. Les dossiers supprimés ici, maintenant vidés
   await trashEmptyFolders();
   // 7. L'historique de chaque texte
@@ -2547,37 +2623,42 @@ function clipBytes(s, max) {
 const versionProps = v => ({ rimeVersion: String(v.id), rimeId: String(v.docId), at: String(v.at), source: v.source, pinned: v.pinned ? '1' : '0', label: clipBytes(v.label, 110) });
 
 async function syncVersions(root, remote) {
-  const folders = await driveFolders();
-  const valid = new Set(folders.map(f => f.id));
-  if (!valid.has(drive.vroot)) drive.vroot = null;
+  const dfolders = await driveFolders();
+  const valid = new Set(dfolders.map(f => f.id));
   // Un dossier de versions supprimé dans Drive : ses versions repartent, rien n'est effacé ici
+  refreshShared();
   const lost = new Set(Object.keys(drive.vfolders).filter(docId => !valid.has(drive.vfolders[docId])).map(Number));
-  lost.forEach(docId => { delete drive.vfolders[docId]; });
+  mutate(() => {
+    if (!valid.has(drive.vroot)) drive.vroot = null;
+    lost.forEach(docId => { delete drive.vfolders[docId]; });
+  });
   const local = await allVersions();
   const known = new Set(local.map(v => v.id));
   const byVersion = new Map(remote.map(f => [Number(f.appProperties.rimeVersion), f]));
   const put = [], drop = [];
 
   // Le dossier des versions d'un texte, créé au besoin (et renommé comme le texte)
-  const folderOf = async docId => {
+  const versionsFolder = async docId => {
+    refreshShared();
     const title = (docTitle(docs.find(d => d.id === docId)?.text || '') || 'Sans titre').slice(0, 80);
-    let f = folders.find(x => x.id === drive.vfolders[docId]) ?? folders.find(x => x.appProperties?.rimeVersionsOf === String(docId));
+    let f = dfolders.find(x => x.id === drive.vfolders[docId]) ?? dfolders.find(x => x.appProperties?.rimeVersionsOf === String(docId));
     if (!f) {
-      drive.vroot ??= folders.find(x => x.appProperties?.rime === 'versions')?.id
-        ?? (await driveApi('files?fields=id', { method: 'POST', json: { name: 'Versions', mimeType: FOLDER_TYPE, parents: [root], appProperties: { rime: 'versions' } } })).id;
-      f = await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: title, mimeType: FOLDER_TYPE, parents: [drive.vroot], appProperties: { rimeVersionsOf: String(docId) } } });
-      folders.push(f);
+      let vroot = drive.vroot ?? dfolders.find(x => x.appProperties?.rime === 'versions')?.id;
+      vroot ??= (await driveApi('files?fields=id', { method: 'POST', json: { name: 'Versions', mimeType: FOLDER_TYPE, parents: [root], appProperties: { rime: 'versions' } } })).id;
+      mutate(() => { drive.vroot = vroot; });
+      f = await driveApi('files?fields=id,name,appProperties', { method: 'POST', json: { name: title, mimeType: FOLDER_TYPE, parents: [vroot], appProperties: { rimeVersionsOf: String(docId) } } });
+      dfolders.push(f);
     } else if (f.name !== title) {
       await driveApi(`files/${f.id}?fields=id`, { method: 'PATCH', json: { name: title } });
       f.name = title;
     }
-    drive.vfolders[docId] = f.id;
+    mutate(() => { drive.vfolders[docId] = f.id; });
     return f.id;
   };
   const upload = async v => {
     const f = await driveApi('files?uploadType=multipart&fields=id', {
       method: 'POST',
-      upload: { meta: { name: versionFile(v), mimeType: 'text/plain', parents: [await folderOf(v.docId)], appProperties: versionProps(v) }, text: v.text },
+      upload: { meta: { name: versionFile(v), mimeType: 'text/plain', parents: [await versionsFolder(v.docId)], appProperties: versionProps(v) }, text: v.text },
     });
     v.drive = { id: f.id };
   };
@@ -2614,7 +2695,7 @@ async function syncVersions(root, remote) {
   for (const f of remote) {
     const id = Number(f.appProperties.rimeVersion), docId = Number(f.appProperties.rimeId);
     if (known.has(id) || drive.trash.includes(f.id) || !docs.some(d => d.id === docId)) continue;
-    const text = (await driveApi(`files/${f.id}?alt=media`, { raw: true }) ?? '').replace(/\r\n?/g, '\n');
+    const text = await driveText(f.id);
     put.push({
       id, docId, at: Number(f.appProperties.at) || remoteTime(f), text, source: f.appProperties.source || 'save',
       label: f.appProperties.label || '', pinned: f.appProperties.pinned === '1', stats: null, drive: { id: f.id },
@@ -2625,16 +2706,16 @@ async function syncVersions(root, remote) {
   const keep = put.filter(v => now.has(v.id) || !known.has(v.id)).map(v => now.get(v.id)?.meta ? { ...now.get(v.id), drive: v.drive } : v);
   if (keep.length) await putVersions(keep);
   if (drop.length) await dropVersions(drop);
-  saveDrive();
   if (vstate.open && (keep.length || drop.length)) loadVersions();
 }
 
-// Une seule synchro à la fois ; une demande pendant la synchro en relance une derrière
+// Une seule synchro à la fois, tous onglets confondus (verrou du navigateur) ; une demande pendant la synchro
+// en relance une derrière
 async function syncDrive() {
   if (!drive.on) return;
   if (syncing) { syncAgain = true; return syncing; }
   clearTimeout(syncTimer);
-  syncing = syncOnce();
+  syncing = navigator.locks ? navigator.locks.request('rime-drive-sync', syncOnce) : syncOnce();
   try { await syncing; } finally { syncing = null; }
   if (syncAgain) { syncAgain = false; return syncDrive(); }
 }
@@ -2644,15 +2725,16 @@ async function syncOnce() {
   try {
     if (!hasToken()) throw authError();
     await runDriveSync();
-    drive.email ??= (await driveApi('about?fields=user(emailAddress)').catch(() => null))?.user?.emailAddress || '';
+    if (drive.email === undefined) {
+      const email = (await driveApi('about?fields=user(emailAddress)').catch(() => null))?.user?.emailAddress || '';
+      mutate(() => { drive.email = email; });
+    }
     lastSync = Date.now();
     setDriveStatus('idle');
   } catch (e) {
     setDriveStatus(e.auth ? 'auth' : 'error', e.message);
   }
-  docs.sort((a, b) => b.updated - a.updated);
-  store('rime-history', docs);
-  saveDrive();
+  mutate(() => docs.sort((a, b) => b.updated - a.updated));
   renderDocState();
   renderLib();
   renderMeta();
@@ -2684,19 +2766,52 @@ function renderDrive() {
   btn.hidden = !drive.on;
   const label = { idle: 'Drive à jour', sync: 'Synchro…', auth: 'Reconnecter Drive', error: 'Erreur Drive' }[state];
   const icon = { idle: CLOUD_OK, sync: CLOUD_UP }[state] || CLOUD_WARN;
-  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="${icon}"/></svg><span class="lbl">${label}</span>`;
+  btn.innerHTML = `${svgIcon(icon)}<span class="lbl">${label}</span>`;
   btn.classList.toggle('warn', state === 'auth' || state === 'error');
   btn.dataset.tip = note;
   $('driveOff').hidden = drive.on;
   $('driveOn').hidden = !drive.on;
   $('driveNote').textContent = note;
+  $('driveBanner').hidden = !(drive.on && state === 'auth' && !bannerClosed);
 }
 
 $('driveBtn').addEventListener('click', syncNow);
 $('driveFolderName').addEventListener('keydown', e => { if (e.key === 'Enter') { closeMenus(); connectDrive(); } });
-// Retour sur l'onglet : on récupère ce qui a pu changer ailleurs
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && drive.on && hasToken() && Date.now() - lastSync > 30000) syncDrive();
+$('driveBanner').addEventListener('click', e => {
+  if (e.target.closest('[data-reconnect]')) connectDrive();
+  else if (e.target.closest('[data-dismiss]')) { bannerClosed = true; renderDrive(); }
+});
+// Retour sur l'onglet ou la fenêtre, et toutes les deux minutes : on récupère ce qui a pu changer ailleurs
+function pullIfStale() {
+  if (document.visibilityState === 'visible' && drive.on && hasToken() && !syncing && Date.now() - lastSync > 30000) syncDrive();
+}
+document.addEventListener('visibilitychange', pullIfStale);
+addEventListener('focus', pullIfStale);
+setInterval(pullIfStale, 120000);
+
+// ── Autres onglets : ils ont sauvé, rangé, supprimé, synchronisé, ou se sont reconnectés à Google ──
+addEventListener('storage', e => {
+  if (e.key === 'rime-drive-token') {
+    driveToken = storedToken();
+    if (hasToken() && driveStatus.state === 'auth') { setDriveStatus('idle'); requestSync(300); }
+    return;
+  }
+  if (e.key !== 'rime-rev' && e.key !== null) return;   // rime-rev est écrit en dernier ; null : stockage vidé
+  const before = savedDoc();
+  const clean = before && before.text === ta.value;
+  if (!refreshShared()) return;
+  const now = savedDoc();
+  if (before && !now) {
+    // Supprimé dans l'autre onglet : le texte reste ici, comme un brouillon
+    Object.assign(doc, { id: null }, draftMeta(before));
+    persistDraft();
+    closeVersions();
+  } else if (now && clean && now.text !== ta.value) setText(now.text, now.id);   // sauvé ailleurs, rien de modifié ici
+  renderDocState();
+  renderLib();
+  renderMeta();
+  renderProd();
+  renderDrive();
 });
 
 // ── Export ──
@@ -2793,14 +2908,9 @@ function download(name, content, type = 'text/plain') {
 
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+// Le toast est une région live (role=status) : les lecteurs d'écran l'annoncent
 function toast(msg) {
-  let el = $('toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'toast';
-    el.className = 'toast';
-    document.body.appendChild(el);
-  }
+  const el = $('toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(el._t);
@@ -2915,8 +3025,9 @@ function tipText(el) {
     const v = match[indexIn(mirror, el.parentElement)], w = +el.dataset.w;
     const l = lastResult.info[v];
     if (!l) return '';
-    const it = l.internal.find(x => x.i === w);
-    return w === l.end && l.group ? levelTitle(l, v) : it ? internalTitle(it, v) : '';
+    const it = l.internal.find(x => x.i === w), r = repeatAt(v, w);
+    const rhyme = w === l.end && l.group ? levelTitle(l, v) : it ? internalTitle(it, v) : '';
+    return [rhyme, r && repeatTitle(r, v, w)].filter(Boolean).join(' · ');
   }
   if (el.classList.contains('c')) {
     const row = el.parentElement;
@@ -2951,6 +3062,20 @@ document.addEventListener('mouseover', e => {
 ta.addEventListener('mousemove', e => setHover(mirrorWordAt(e.clientX, e.clientY)));
 ta.addEventListener('mouseleave', () => setHover(null));
 editor.addEventListener('scroll', hideTip, { passive: true });
+// Au clavier aussi : l'infobulle de l'élément qui prend le focus, lue par les lecteurs d'écran (aria-describedby)
+document.addEventListener('focusin', e => {
+  const el = e.target, text = el.dataset?.tip;
+  if (!text || !el.matches(':focus-visible')) return;
+  hideTip();
+  tip.textContent = text;
+  el.setAttribute('aria-describedby', 'tip');
+  tipTimer = setTimeout(() => showTip(el, text), 400);
+});
+document.addEventListener('focusout', e => {
+  if (e.target.getAttribute?.('aria-describedby') !== 'tip') return;
+  e.target.removeAttribute('aria-describedby');
+  hideTip();
+});
 
 // Les pastilles ne prennent pas le focus : la textarea garde son curseur
 $('rail').addEventListener('mousedown', e => { if (e.target.closest('.chip')) e.preventDefault(); });
@@ -2958,7 +3083,7 @@ $('rail').addEventListener('mousedown', e => { if (e.target.closest('.chip')) e.
 document.addEventListener('click', e => {
   const menuBtn = e.target.closest('[aria-controls]');
   if (menuBtn) { toggleMenu(menuBtn); return; }
-  if (!e.target.closest('.menu') || e.target.closest('.menu-item, .doc-open')) closeMenus();
+  if (!e.target.closest('.menu, .view-tools') || e.target.closest('.menu-item')) closeMenus();
   // Menus « … » du panneau Textes et liste des dossiers de « Ce texte » : un clic ailleurs les ferme
   if (libState.menu && !e.target.closest('.lib-menu, [data-dmenu], [data-fmenu]')) { libState.menu = null; renderLib(); }
   if (folderPick && !e.target.closest('#metaFolderPick, #metaFolderBtn')) { folderPick = false; renderMeta(); }
@@ -2974,23 +3099,30 @@ document.addEventListener('click', e => {
 });
 
 document.addEventListener('keydown', e => {
+  if ($('ask').open) return;   // la boîte de dialogue gère ses touches (Échap l'annule)
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); toggleVersions(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveDoc(); }
   else if (mod && e.code === 'Space' && activeProd()) { e.preventDefault(); togglePlay(); }
   else if (e.key === 'Escape') {
-    const menuOpen = document.querySelector('.menu:not([hidden])');
+    const wasOpen = [...document.querySelectorAll('.menu, .view-tools')].some(menuOpen);
     closeMenus();
     hideTip();
     if (libState.menu || folderPick) { libState.menu = null; folderPick = false; renderLib(); renderMeta(); }
     else if (lockedPh) setLock(null);
-    else if (!menuOpen && document.activeElement !== $('vLabel')) closeVersions();
+    else if (!wasOpen && document.activeElement !== $('vLabel')) closeVersions();
   }
+});
+
+// Sections repliables du panneau d'analyse (Ce texte, Prods du texte)
+document.querySelectorAll('details[data-fold]').forEach(d => {
+  d.open = !prefs.fold[d.dataset.fold];
+  d.addEventListener('toggle', () => { prefs.fold[d.dataset.fold] = !d.open; savePrefs(); });
 });
 
 // La fenêtre change : le panneau Textes reste dans ses bornes, la bande de flow se recalcule
 addEventListener('resize', () => {
-  document.querySelector('.body').style.setProperty('--lib-w', `${libWidth()}px`);
+  body.style.setProperty('--lib-w', `${libWidth()}px`);
   layoutStrip();
 });
 

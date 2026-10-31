@@ -4,46 +4,49 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rime — Analyse de schémas de rimes</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a1a1a'/%3E%3Cpath d='M11 24V8h6a4.5 4.5 0 0 1 0 9h-6m6 0 5 7' fill='none' stroke='%23fafaf7' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Martian+Mono:wdth,wght@75..112.5,400..700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=9">
 <style id="focusStyle"></style>
 </head>
 <body>
 
 <header class="top">
-  <button class="icon-btn" id="libBtn" aria-pressed="true" aria-label="Panneau Textes" title="Afficher ou masquer le panneau des textes : dossiers et tags">
+  <button class="icon-btn" id="libBtn" aria-pressed="true" aria-label="Panneau Textes" data-tip="Afficher ou masquer le panneau des textes : dossiers et tags">
     <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" class="stroke"><path d="M2.5 3.5h13v11h-13Z M6.5 3.5v11"/></svg>
   </button>
   <div class="logo">RIME</div>
   <!-- Le titre rétrécit d'abord ; s'il manque encore de la place, les outils passent à la ligne -->
   <div class="top-doc">
     <div class="menu-wrap">
-      <button class="doc-btn" id="docBtn" aria-haspopup="true" aria-expanded="false" aria-controls="docMenu" title="Sauver, nouveau texte, export, import, Google Drive">
+      <button class="doc-btn" id="docBtn" aria-haspopup="true" aria-expanded="false" aria-controls="docMenu" data-tip="Sauver, nouveau texte, sauvegarde de tous les textes, Google Drive">
         <span class="doc-title" id="docTitle">Sans titre</span>
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" class="stroke"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
       </button>
-      <div class="menu doc-menu" id="docMenu" hidden>
-        <button class="menu-item" onclick="saveDoc()">Sauver <kbd>Ctrl+S</kbd></button>
-        <button class="menu-item" onclick="newDoc()">Nouveau texte</button>
+      <div class="menu doc-menu pop" id="docMenu" hidden>
+        <button class="menu-item" data-action="save">Sauver <kbd>Ctrl+S</kbd></button>
+        <button class="menu-item" data-action="new">Nouveau texte</button>
         <p class="menu-note">Tes textes sont rangés dans le panneau Textes, à gauche.</p>
-        <div class="menu-sep"></div>
-        <button class="menu-item" onclick="exportAll()">Exporter tous les textes <kbd>.json</kbd></button>
+        <div class="menu-label">Tous les textes</div>
+        <button class="menu-item" data-action="backup">Sauvegarder tous les textes <kbd>.json</kbd></button>
         <label class="menu-check"><input type="checkbox" id="exportHistory" checked> avec l'historique des versions</label>
-        <button class="menu-item" onclick="$('importInput').click()">Importer des textes… <kbd>.json .txt</kbd></button>
+        <button class="menu-item" data-action="import">Importer des textes… <kbd>.json .txt</kbd></button>
         <input type="file" id="importInput" accept=".json,.txt,application/json,text/plain" multiple hidden>
         <div class="menu-label">Google Drive</div>
         <div id="driveOff">
           <label class="menu-field">Nom du dossier dans ton Drive
-            <input type="text" id="driveFolderName" placeholder="Rime" maxlength="100" autocomplete="off">
+            <input type="text" class="field field-sm" id="driveFolderName" placeholder="Rime" maxlength="100" autocomplete="off">
           </label>
-          <button class="menu-item" onclick="connectDrive()">Synchroniser avec Google Drive</button>
+          <button class="menu-item" data-action="drive-connect">Synchroniser avec Google Drive</button>
           <p class="menu-note">Un fichier .txt par texte sauvé. Déplace ou renomme le dossier dans Drive : Rime le suit.</p>
         </div>
         <div id="driveOn" hidden>
           <p class="menu-note" id="driveNote"></p>
-          <button class="menu-item" onclick="syncNow()">Synchroniser maintenant</button>
-          <button class="menu-item" onclick="renameDriveFolder()">Renommer le dossier…</button>
-          <button class="menu-item" onclick="disconnectDrive()">Arrêter la synchro</button>
+          <button class="menu-item" data-action="drive-sync">Synchroniser maintenant</button>
+          <button class="menu-item" data-action="drive-rename">Renommer le dossier…</button>
+          <button class="menu-item" data-action="drive-stop">Arrêter la synchro</button>
         </div>
       </div>
     </div>
@@ -52,49 +55,67 @@
   </div>
   <div class="top-tools">
     <div class="seg" role="group" aria-label="Surlignage du texte">
-      <button data-mode="all" aria-pressed="true" title="Rimes de fin et rimes internes">Tout</button>
-      <button data-mode="ends" aria-pressed="false" title="Rimes de fin seulement">Fins de vers</button>
-      <button data-mode="text" aria-pressed="false" title="Le texte sans surlignage, sans bande de flow">Texte seul</button>
+      <button data-mode="all" aria-pressed="true" data-tip="Rimes de fin et rimes internes">Tout</button>
+      <button data-mode="ends" aria-pressed="false" data-tip="Rimes de fin seulement">Fins de vers</button>
+      <button data-mode="text" aria-pressed="false" data-tip="Le texte sans surlignage, sans bande de flow">Texte seul</button>
     </div>
-    <button class="tog" id="flowBtn" aria-pressed="true" title="Afficher ou masquer la bande de flow, une case par syllabe">Flow</button>
-    <button class="tog" id="vowBtn" aria-pressed="false" title="Colorer chaque syllabe de la bande par sa voyelle">Voyelles</button>
-    <button class="tog" id="stanzaBtn" aria-pressed="false" title="Rimes de strophe : dans chaque strophe, un mot accentué qui rime avec une fin de vers prend sa couleur, à n'importe quelle distance. Les petits mots sans accent (j'ai, les, c'est…) restent hors jeu.">Strophe</button>
+    <!-- Sur mobile, ces bascules passent dans un menu « Affichage » -->
+    <div class="menu-wrap view-wrap">
+      <button class="tog view-btn" id="viewBtn" aria-haspopup="true" aria-expanded="false" aria-controls="viewMenu">Affichage</button>
+      <div class="view-tools" id="viewMenu">
+        <button class="tog" id="flowBtn" aria-pressed="true" data-tip="Afficher ou masquer la bande de flow, une case par syllabe">Flow</button>
+        <button class="tog" id="vowBtn" aria-pressed="false" data-tip="Colorer chaque syllabe de la bande par sa voyelle : on y voit aussi les assonances à l'intérieur des vers">Voyelles</button>
+        <button class="tog" id="stanzaBtn" aria-pressed="false" data-tip="Rimes de strophe : dans chaque strophe, un mot accentué qui rime avec une fin de vers prend sa couleur, à n'importe quelle distance. Les petits mots sans accent (j'ai, les, c'est…) restent hors jeu.">Strophe</button>
+        <button class="tog" id="repeatBtn" aria-pressed="false" data-tip="Reprises : dans chaque strophe, les mots repris (le même mot, ou tête et têtes) sont surmontés d'un trait. Une reprise n'est pas une rime. Les petits mots sans accent restent hors jeu.">Reprises</button>
+      </div>
+    </div>
     <button class="tog tog-icon" id="versionsBtn" aria-pressed="false">
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.8 8a5.2 5.2 0 1 0 1.5-3.7 M2.6 2.4v2.6h2.6 M8 5v3.2l2.1 1.3"/></svg><span class="lbl">Versions</span>
     </button>
     <div class="menu-wrap">
-      <button class="tog tog-icon" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu" title="Télécharger, partager, rapport d'analyse">
+      <button class="tog tog-icon" id="exportBtn" aria-haspopup="true" aria-expanded="false" aria-controls="exportMenu" data-tip="Ce texte : télécharger, partager, rapport d'analyse">
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M8 10V2.8 M5.4 5.3 8 2.7l2.6 2.6 M3 9v4h10V9"/></svg><span class="lbl">Exporter</span>
       </button>
-      <div class="menu menu-right" id="exportMenu" hidden>
-        <button class="menu-item" onclick="downloadText()">Télécharger le texte <kbd>.txt</kbd></button>
-        <button class="menu-item" id="shareItem" onclick="shareText()" title="Vers Notes, Mail, Drive… selon l'appareil">Partager…</button>
+      <div class="menu menu-right pop" id="exportMenu" hidden>
+        <div class="menu-label first">Ce texte</div>
+        <button class="menu-item" data-action="download">Télécharger le texte <kbd>.txt</kbd></button>
+        <button class="menu-item" id="shareItem" data-action="share" data-tip="Vers Notes, Mail, Drive… selon l'appareil">Partager…</button>
         <div class="menu-sep"></div>
-        <button class="menu-item" onclick="copyReport()">Copier le rapport d'analyse</button>
-        <button class="menu-item" onclick="downloadReport()">Télécharger le rapport <kbd>.txt</kbd></button>
+        <button class="menu-item" data-action="report-copy">Copier le rapport d'analyse</button>
+        <button class="menu-item" data-action="report-download">Télécharger le rapport <kbd>.txt</kbd></button>
       </div>
     </div>
-    <button class="icon-btn" id="railBtn" aria-pressed="true" aria-label="Panneau d'analyse" title="Afficher ou masquer le panneau d'analyse">
+    <button class="icon-btn" id="railBtn" aria-pressed="true" aria-label="Panneau d'analyse" data-tip="Afficher ou masquer le panneau d'analyse">
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" class="stroke"><path d="M2.5 3.5h13v11h-13Z M11.5 3.5v11"/></svg>
     </button>
   </div>
 </header>
+
+<!-- Jeton Google expiré : la synchro attend. Se reconnecter avant d'écrire évite d'écrire sur une ancienne version. -->
+<div class="banner" id="driveBanner" role="status" hidden>
+  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M4.5 12.5h7.2a2.8 2.8 0 0 0 .4-5.6A4 4 0 0 0 4.4 6.6a3 3 0 0 0 .1 5.9Z M8 7.6v1.6 M8 10.9v.1"/></svg>
+  <span id="driveBannerText">Google Drive n'est plus connecté ici : reconnecte-toi pour récupérer ce que tu as écrit sur tes autres appareils.</span>
+  <button class="btn-sm solid" data-reconnect>Reconnecter</button>
+  <button class="icon-sm" data-dismiss aria-label="Plus tard" data-tip="Plus tard : la prochaine sauvegarde rouvrira la fenêtre Google">
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" class="stroke thick"><path d="M4.5 4.5l7 7 M11.5 4.5l-7 7"/></svg>
+  </button>
+</div>
 
 <div class="body">
   <!-- Panneau Textes : dossiers et textes sauvés, filtre par tags -->
   <aside class="lib" id="lib" aria-label="Textes">
     <div class="lib-head">
       <h2>Textes</h2>
-      <button class="icon-sm" id="libNewText" aria-label="Nouveau texte" title="Nouveau texte, dans le dossier du texte ouvert">
+      <button class="icon-sm" id="libNewText" aria-label="Nouveau texte" data-tip="Nouveau texte, dans le dossier du texte ouvert">
         <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M4 2.5h5l3 3v8H4Z M9 2.5v3h3 M8 7.5v4 M6 9.5h4"/></svg>
       </button>
-      <button class="icon-sm" id="libNewFolder" aria-label="Nouveau dossier" title="Nouveau dossier ; avec Google Drive, un sous-dossier de ton dossier Rime">
+      <button class="icon-sm" id="libNewFolder" aria-label="Nouveau dossier" data-tip="Nouveau dossier ; avec Google Drive, un sous-dossier de ton dossier Rime">
         <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 12.5V3.8h3.8l1.4 1.6h5.8v7.1Z M8 7v4 M6 9h4"/></svg>
       </button>
     </div>
     <form class="lib-create" id="libCreate" hidden>
       <label for="libFolderName">Nom du nouveau dossier</label>
-      <input type="text" id="libFolderName" maxlength="80" placeholder="Par exemple : Album 01" autocomplete="off">
+      <input type="text" class="field field-sm" id="libFolderName" maxlength="80" placeholder="Par exemple : Album 01" autocomplete="off">
       <div class="lib-create-btns">
         <button type="submit" class="btn-sm solid">Créer</button>
         <button type="button" class="btn-sm" id="libCreateCancel">Annuler</button>
@@ -106,17 +127,17 @@
       <div class="tags" id="libTags" role="group" aria-label="Filtrer par tag"></div>
       <p class="lib-summary" id="libSummary"></p>
     </div>
-    <button class="lib-grip" id="libGrip" aria-label="Largeur du panneau Textes" title="Glisser pour élargir ou réduire le panneau, double-clic pour la largeur par défaut"></button>
+    <button class="lib-grip" id="libGrip" aria-label="Largeur du panneau Textes" data-tip="Glisser pour élargir ou réduire le panneau, double-clic pour la largeur par défaut"></button>
   </aside>
 
   <main class="editor" id="editor" aria-label="Paroles" data-mode="all" data-zoom="vow">
     <div class="ed-head">
       <span></span>
       <span class="h-text">
-        <span title="# titre ou commentaire · [section] · (adlib) : ignorés par l'analyse&#10;ligne vide : nouvelle strophe">Paroles</span>
+        <span data-tip="# titre ou commentaire · [section] · (adlib) : ignorés par l'analyse · ligne vide : nouvelle strophe">Paroles</span>
         <span class="legend" id="legend"></span>
       </span>
-      <button class="grip" id="grip" aria-label="Largeur de la bande de flow" title="Glisser pour redimensionner la bande, double-clic pour la largeur auto"></button>
+      <button class="grip" id="grip" aria-label="Largeur de la bande de flow" data-tip="Glisser pour redimensionner la bande, double-clic pour la largeur auto"></button>
       <span class="h-flow" id="flowHint">Flow</span>
       <span class="h-meta">syl.</span>
     </div>
@@ -140,13 +161,14 @@
   <section class="compare" id="compare" aria-label="Comparaison des versions">
     <div class="cmp-bar">
       <div class="cmp-title"><strong id="cmpHeading"></strong><span id="cmpSub"></span></div>
-      <div class="spacer"></div>
-      <button class="pin-btn" id="cmpPin" aria-pressed="false" aria-label="Épingler cette version">
-        <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>
-      </button>
-      <button class="tog tog-icon solid" id="cmpRestore">
-        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2 M3.5 3v2.5H6"/></svg>Restaurer
-      </button>
+      <div class="cmp-acts">
+        <button class="pin-btn" id="cmpPin" aria-pressed="false" aria-label="Épingler cette version">
+          <svg width="17" height="17" viewBox="0 0 16 16" aria-hidden="true" class="star"><path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.6l-3.8 2 .7-4.3-3.1-3 4.3-.6Z"/></svg>
+        </button>
+        <button class="tog tog-icon solid" id="cmpRestore">
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2 M3.5 3v2.5H6"/></svg>Restaurer
+        </button>
+      </div>
       <div class="cmp-ctls">
         <div class="cmp-ctl">Comparer à
           <div class="seg seg-sm" role="group" aria-label="Comparer à">
@@ -156,8 +178,8 @@
         </div>
         <div class="cmp-ctl">Affichage
           <div class="seg seg-sm" role="group" aria-label="Affichage">
-            <button data-view="side" aria-pressed="true" title="Les deux textes face à face"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 3.5h11v9h-11Z M8 3.5v9"/></svg>Côte à côte</button>
-            <button data-view="inline" aria-pressed="false" title="Un seul texte, changements surlignés"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 4.5h11 M2.5 8h11 M2.5 11.5h7"/></svg>Fusionné</button>
+            <button data-view="side" aria-pressed="true" data-tip="Les deux textes face à face"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 3.5h11v9h-11Z M8 3.5v9"/></svg>Côte à côte</button>
+            <button data-view="inline" aria-pressed="false" data-tip="Un seul texte, changements surlignés"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M2.5 4.5h11 M2.5 8h11 M2.5 11.5h7"/></svg>Fusionné</button>
           </div>
         </div>
       </div>
@@ -174,7 +196,7 @@
     <div class="vr-list" id="vList"></div>
     <div class="vr-foot">
       <label for="vLabel">Nom de la version sélectionnée</label>
-      <input type="text" id="vLabel" maxlength="50" placeholder="Par exemple : version studio" autocomplete="off">
+      <input type="text" class="field" id="vLabel" maxlength="50" placeholder="Par exemple : version studio" autocomplete="off">
       <button class="vr-del" id="vDelete" disabled>
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true" class="stroke"><path d="M3 4.5h10 M6.5 4.5V3h3v1.5 M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg><span id="vDeleteText">Coche des versions pour les supprimer</span>
       </button>
@@ -183,31 +205,13 @@
   </aside>
 
   <aside class="rail" id="rail" aria-label="Analyse">
-    <!-- Ce texte : son dossier, ses tags, sa place dans Drive -->
-    <section class="rs meta" id="metaSection">
-      <h2>Ce texte</h2>
-      <div class="meta-field">
-        <span class="meta-label">Dossier</span>
-        <button class="meta-folder" id="metaFolderBtn" aria-expanded="false" aria-label="Dossier du texte : changer"></button>
-        <div class="meta-pick" id="metaFolderPick" hidden></div>
-      </div>
-      <div class="meta-field">
-        <span class="meta-label">Tags</span>
-        <div class="tags" id="metaTags"></div>
-        <label for="metaTagInput" class="vh">Ajouter un tag à ce texte</label>
-        <input type="text" id="metaTagInput" class="meta-input" placeholder="Ajouter un tag, puis Entrée" maxlength="30" autocomplete="off">
-        <div class="tags" id="metaTagSugg"></div>
-      </div>
-      <p class="meta-drive" id="metaDrive" hidden></p>
-    </section>
-
     <!-- Prod : le lecteur YouTube ; il reste collé en haut du panneau pendant la lecture -->
     <div class="prod-dock" id="prodDock" hidden>
       <div class="prod-head">
         <h2>Prod</h2>
         <span class="prod-bpm" id="prodBpm"></span>
         <span class="spacer"></span>
-        <kbd title="Lecture et pause, même pendant que tu écris">Ctrl+Espace</kbd>
+        <kbd data-tip="Lecture et pause, même pendant que tu écris">Ctrl+Espace</kbd>
         <button class="icon-sm" id="prodFold" aria-expanded="true"></button>
       </div>
       <div id="prodOpen">
@@ -224,9 +228,9 @@
         <div class="prod-tempo">
           <div class="prod-bpm-field">
             <label for="prodBpmInput">BPM</label>
-            <input type="number" id="prodBpmInput" min="40" max="240" step="1" placeholder="—">
+            <input type="number" class="field field-bpm" id="prodBpmInput" min="40" max="240" step="1" placeholder="—">
           </div>
-          <button class="prod-tap" id="prodTap" title="Clique sur chaque temps, au moins 4 fois">Tap</button>
+          <button class="prod-tap" id="prodTap" data-tip="Clique sur chaque temps, au moins 4 fois">Tap</button>
           <p class="prod-hint" id="prodTapHint" aria-live="polite"></p>
         </div>
       </div>
@@ -235,14 +239,76 @@
         <div class="prod-folded-text"><span id="prodFoldedTitle"></span><span id="prodFoldedNote"></span></div>
       </div>
     </div>
-    <section class="rs" id="prodSection">
-      <div class="rs-head"><h2 id="prodListTitle">Prod</h2><span class="rs-count" id="prodCount"></span></div>
+
+    <!-- L'analyse d'abord : le vers courant et ses rimes servent pendant l'écriture -->
+    <section class="rs" id="curSection">
+      <div class="cur-head">
+        <h2 class="cur-title" id="curTitle">Vers</h2>
+        <span class="cur-rime" id="curRime"></span>
+        <span class="cur-level" id="curLevel"></span>
+      </div>
+      <div id="curLinks"></div>
+      <div id="curSug"></div>
+      <label class="search-label" for="searchInput">Chercher une rime</label>
+      <div class="search">
+        <input type="search" class="field" id="searchInput" placeholder="Un mot ou une fin de vers" autocomplete="off">
+        <select class="field" id="searchSyl" aria-label="Nombre de syllabes du mot proposé" data-tip="Nombre de syllabes du mot proposé">
+          <option value="">Syll.</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4+</option>
+        </select>
+        <select class="field" id="searchCat" aria-label="Nature du mot proposé" data-tip="Nature du mot proposé">
+          <option value="">Nature</option>
+          <option value="NOM">Noms</option>
+          <option value="VER">Verbes</option>
+          <option value="ADJ">Adjectifs</option>
+          <option value="ADV">Adverbes</option>
+        </select>
+      </div>
+      <div id="searchResults"></div>
+    </section>
+    <section class="rs">
+      <h2>Schéma</h2>
+      <div class="scheme" id="scheme"></div>
+    </section>
+    <section class="rs">
+      <h2>Familles</h2>
+      <div class="fams" id="fams"></div>
+    </section>
+    <section class="rs">
+      <h2>Sons qui reviennent</h2>
+      <div id="sounds"></div>
+    </section>
+
+    <!-- Ce texte : son dossier, ses tags, sa place dans Drive ; repliable -->
+    <details class="rs meta" id="metaSection" data-fold="meta" open>
+      <summary><h2>Ce texte</h2><span class="sum-note" id="metaSummary"></span></summary>
+      <div class="meta-field">
+        <span class="meta-label">Dossier</span>
+        <button class="meta-folder" id="metaFolderBtn" aria-expanded="false" aria-label="Dossier du texte : changer"></button>
+        <div class="meta-pick pop" id="metaFolderPick" hidden></div>
+      </div>
+      <div class="meta-field">
+        <span class="meta-label">Tags</span>
+        <div class="tags" id="metaTags"></div>
+        <label for="metaTagInput" class="vh">Ajouter un tag à ce texte</label>
+        <input type="text" id="metaTagInput" class="field" placeholder="Ajouter un tag, puis Entrée" maxlength="30" autocomplete="off">
+        <div class="tags" id="metaTagSugg"></div>
+      </div>
+      <p class="meta-drive" id="metaDrive" hidden></p>
+    </details>
+
+    <!-- Prods du texte : choisir, ajouter, retirer ; repliable -->
+    <details class="rs rs-last" id="prodSection" data-fold="prod" open>
+      <summary><h2 id="prodListTitle">Prod</h2><span class="sum-note" id="prodCount"></span></summary>
       <div class="prod-list" id="prodList" role="radiogroup" aria-label="Prod active"></div>
       <div class="prod-undo" id="prodUndo" hidden><span id="prodUndoText"></span><button class="link-btn" id="prodUndoBtn">Annuler</button></div>
       <label class="search-label" for="prodUrl">Ajouter une prod</label>
       <div class="search">
-        <input type="url" id="prodUrl" inputmode="url" placeholder="Lien YouTube" autocomplete="off" spellcheck="false">
-        <button class="btn-sm" id="prodPaste" title="Coller le lien copié">Coller</button>
+        <input type="url" class="field" id="prodUrl" inputmode="url" placeholder="Lien YouTube" autocomplete="off" spellcheck="false">
+        <button class="btn-sm" id="prodPaste" data-tip="Coller le lien copié">Coller</button>
       </div>
       <p class="prod-note" id="prodNote" aria-live="polite"></p>
       <div class="prod-found" id="prodFound" hidden>
@@ -254,48 +320,7 @@
           <button class="btn-sm" id="prodCancel">Annuler</button>
         </div>
       </div>
-    </section>
-
-    <section class="rs">
-      <h2>Schéma</h2>
-      <div class="scheme" id="scheme"></div>
-    </section>
-    <section class="rs" id="curSection">
-      <div class="cur-head">
-        <h2 class="cur-title" id="curTitle">Vers</h2>
-        <span class="cur-rime" id="curRime"></span>
-        <span class="cur-level" id="curLevel"></span>
-      </div>
-      <div id="curLinks"></div>
-      <div id="curSug"></div>
-      <label class="search-label" for="searchInput">Chercher une rime</label>
-      <div class="search">
-        <input type="search" id="searchInput" placeholder="Un mot ou une fin de vers" autocomplete="off">
-        <select id="searchSyl" title="Nombre de syllabes du mot proposé">
-          <option value="">Syll.</option>
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4+</option>
-        </select>
-        <select id="searchCat" title="Nature du mot proposé">
-          <option value="">Nature</option>
-          <option value="NOM">Noms</option>
-          <option value="VER">Verbes</option>
-          <option value="ADJ">Adjectifs</option>
-          <option value="ADV">Adverbes</option>
-        </select>
-      </div>
-      <div id="searchResults"></div>
-    </section>
-    <section class="rs">
-      <h2>Familles</h2>
-      <div class="fams" id="fams"></div>
-    </section>
-    <section class="rs rs-last">
-      <h2>Sons qui reviennent</h2>
-      <div id="sounds"></div>
-    </section>
+    </details>
   </aside>
 </div>
 
@@ -308,8 +333,23 @@
   <span class="foot-status" id="status">phonétique Lexique 3.83</span>
 </footer>
 
-<div class="tip" id="tip" role="tooltip" hidden></div>
+<!-- Confirmer, ou demander un nom : remplace confirm() et prompt() -->
+<dialog class="ask" id="ask" aria-labelledby="askTitle">
+  <form method="dialog">
+    <h2 id="askTitle"></h2>
+    <p id="askText"></p>
+    <label class="ask-field" id="askField" hidden><span id="askLabel"></span><input type="text" class="field" id="askInput" autocomplete="off"></label>
+    <!-- Valider d'abord dans le DOM : c'est le bouton d'Entrée ; l'ordre affiché est inversé -->
+    <div class="ask-btns">
+      <button value="ok" class="btn-sm solid" id="askOk" data-ok>OK</button>
+      <button value="cancel" class="btn-sm" id="askCancel" formnovalidate>Annuler</button>
+    </div>
+  </form>
+</dialog>
 
-<script src="script.js?v=8"></script>
+<div class="tip" id="tip" role="tooltip" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="script.js?v=9"></script>
 </body>
 </html>
